@@ -1,5 +1,4 @@
 [workspace]
-name = "quantflow"
 members = ["crates/*"]
 resolver = "2"
 

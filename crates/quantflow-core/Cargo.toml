@@ -1,0 +1,20 @@
+[package]
+name = "quantflow-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+crossbeam = "0.8"
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+tracing = "0.1"
+arrow = { version = "53", features = ["ffi"] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "lob_bench"
+harness = false

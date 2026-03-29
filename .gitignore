@@ -1,0 +1,26 @@
+# Rust
+target/
+Cargo.lock
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+*.egg-info/
+.pytest_cache/
+*.so
+*.pyd
+
+# Data
+data/*.parquet
+data/*.csv
+
+# Tool config — never commit
+CLAUDE.md
+.claude/
+
+# IDE
+.idea/
+.vscode/
+*.swp

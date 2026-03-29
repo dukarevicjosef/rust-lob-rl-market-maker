@@ -1,0 +1,29 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "quantflow"
+version = "0.1.0"
+description = "High-performance LOB engine and RL market-making environment"
+authors = [{ name = "Josef Dukarevic", email = "dukarevicjosef@gmail.com" }]
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "polars>=0.20",
+    "torch>=2.2",
+    "stable-baselines3>=2.3",
+    "gymnasium>=0.29",
+]
+
+[tool.maturin]
+python-source = "python"
+module-name = "quantflow.quantflow"
+manifest-path = "crates/quantflow-ffi/Cargo.toml"
+features = ["pyo3/extension-module"]

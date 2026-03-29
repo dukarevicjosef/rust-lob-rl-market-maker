@@ -1,0 +1,18 @@
+[package]
+name = "quantflow-ffi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "quantflow"
+crate-type = ["cdylib"]
+
+[dependencies]
+quantflow-core = { path = "../quantflow-core" }
+pyo3 = { version = "0.21", features = ["extension-module"] }
+pyo3-arrow = "0.7"
+
+[build-dependencies]
+# maturin handles build configuration via pyproject.toml

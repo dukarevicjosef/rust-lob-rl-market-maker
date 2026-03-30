@@ -191,6 +191,9 @@ impl ExcitationKernel for PowerLawKernel {
 
 /// Composite Simpson's 1/3 rule on [a, b] with n evenly spaced panels.
 /// If n is odd it is incremented by one to keep the panel count even.
+///
+/// Retained for kernels without a closed-form antiderivative.
+#[allow(dead_code)]
 fn simpson(f: impl Fn(f64) -> f64, a: f64, b: f64, n: usize) -> f64 {
     let n = if n % 2 == 1 { n + 1 } else { n };
     let h = (b - a) / n as f64;

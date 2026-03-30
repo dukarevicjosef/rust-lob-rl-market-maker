@@ -13,6 +13,9 @@ tracing = "0.1"
 arrow = { version = "53", features = ["ffi"] }
 parquet = { version = "53", features = ["arrow"] }
 thiserror = "1"
+rand = { version = "0.8", features = ["small_rng"] }
+rand_distr = "0.4"
+rayon = "1"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

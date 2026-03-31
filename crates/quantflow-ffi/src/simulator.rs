@@ -127,6 +127,33 @@ impl PyHawkesSimulator {
     pub fn mid_price(&self) -> Option<f64> {
         self.inner.mid_price()
     }
+
+    /// Place a limit order on the simulator's live book.
+    ///
+    /// Returns the order ID (u64) that can be passed to ``cancel_agent_order``.
+    pub fn place_limit_order(&mut self, side: &str, price: f64, qty: u64) -> PyResult<u64> {
+        use quantflow_core::orderbook::types::{Price, Quantity, Side};
+        let side = match side.to_lowercase().as_str() {
+            "bid" | "buy"  => Side::Bid,
+            "ask" | "sell" => Side::Ask,
+            other => return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("unknown side '{other}'; use 'bid' or 'ask'"),
+            )),
+        };
+        let oid = self.inner.place_limit_order(side, Price::from_f64(price), Quantity(qty));
+        Ok(oid.0)
+    }
+
+    /// Cancel a previously placed agent order by ID.
+    pub fn cancel_agent_order(&mut self, order_id: u64) {
+        use quantflow_core::orderbook::types::OrderId;
+        self.inner.cancel_agent_order(OrderId(order_id));
+    }
+
+    /// Total simulation horizon in seconds (from config).
+    pub fn t_max(&self) -> f64 {
+        self.inner.config.t_max
+    }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

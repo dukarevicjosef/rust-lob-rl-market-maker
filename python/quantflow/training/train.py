@@ -5,16 +5,19 @@ Observation space is a gymnasium Dict — SB3 requires ``MultiInputPolicy``
 (not ``MlpPolicy``) which routes each sub-space through a CombinedExtractor
 before passing the concatenated vector to the MLP trunk.
 
+TensorBoard is not required. Metrics are logged to stdout and optionally
+to Weights & Biases via direct ``wandb.log()`` calls (no TB sync needed).
+
 Usage
 -----
-    # Quick run (1M steps, default config)
-    uv run python -m quantflow.training.train
+    # Quick run (50k steps)
+    uv run python -m quantflow.training.train --timesteps 50000
 
-    # Final training run (2M steps)
-    uv run python -m quantflow.training.train --final --run-dir runs/sac_final
-
-    # With Weights & Biases
+    # Full training with W&B
     uv run python -m quantflow.training.train --wandb --wandb-project quantflow-mm
+
+    # Final 2M-step run
+    uv run python -m quantflow.training.train --final --run-dir runs/sac_final
 """
 from __future__ import annotations
 
@@ -28,6 +31,13 @@ from stable_baselines3 import SAC
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 
 from quantflow.envs.market_making import MarketMakingEnv
+
+# W&B is optional — imported lazily
+try:
+    import wandb as _wandb
+    _WANDB_AVAILABLE = True
+except ImportError:
+    _WANDB_AVAILABLE = False
 
 
 # ── Hyperparameter config ──────────────────────────────────────────────────────
@@ -84,6 +94,7 @@ class QuantflowEvalCallback(BaseCallback):
         save_path:       Path | None = None,
         as_gamma:        float       = 0.1,
         as_kappa_offset: float       = 0.0,
+        use_wandb:       bool        = False,
         verbose:         int         = 1,
     ) -> None:
         super().__init__(verbose)
@@ -92,6 +103,7 @@ class QuantflowEvalCallback(BaseCallback):
         self._n_eval        = n_eval_episodes
         self._save_path     = Path(save_path) if save_path else None
         self._as_action     = np.array([as_gamma, as_kappa_offset], dtype=np.float32)
+        self._use_wandb     = use_wandb and _WANDB_AVAILABLE
         self._best_reward   = -np.inf
 
     # ── BaseCallback interface ─────────────────────────────────────────────────
@@ -105,21 +117,28 @@ class QuantflowEvalCallback(BaseCallback):
         )
         as_m = self._run_episodes(lambda _: self._as_action)
 
-        # SAC
-        self.logger.record("eval/mean_reward",        sac_m["mean_reward"])
-        self.logger.record("eval/mean_pnl",           sac_m["mean_pnl"])
-        self.logger.record("eval/mean_sharpe",        sac_m["mean_sharpe"])
-        self.logger.record("eval/mean_inventory_std", sac_m["mean_inv_std"])
-        # Baseline
-        self.logger.record("baseline/mean_reward",    as_m["mean_reward"])
-        self.logger.record("baseline/mean_pnl",       as_m["mean_pnl"])
-        self.logger.record("baseline/mean_sharpe",    as_m["mean_sharpe"])
-        # Deltas
-        self.logger.record("delta/pnl",    sac_m["mean_pnl"]    - as_m["mean_pnl"])
-        self.logger.record("delta/sharpe", sac_m["mean_sharpe"] - as_m["mean_sharpe"])
+        metrics = {
+            "eval/mean_reward":        sac_m["mean_reward"],
+            "eval/mean_pnl":           sac_m["mean_pnl"],
+            "eval/mean_sharpe":        sac_m["mean_sharpe"],
+            "eval/mean_inventory_std": sac_m["mean_inv_std"],
+            "baseline/mean_reward":    as_m["mean_reward"],
+            "baseline/mean_pnl":       as_m["mean_pnl"],
+            "baseline/mean_sharpe":    as_m["mean_sharpe"],
+            "delta/pnl":               sac_m["mean_pnl"]    - as_m["mean_pnl"],
+            "delta/sharpe":            sac_m["mean_sharpe"] - as_m["mean_sharpe"],
+        }
+
+        # SB3 stdout logger (no TensorBoard needed)
+        for k, v in metrics.items():
+            self.logger.record(k, v)
         self.logger.dump(step=self.num_timesteps)
 
-        if self._verbose >= 1:
+        # Direct W&B logging (independent of TensorBoard)
+        if self._use_wandb:
+            _wandb.log(metrics, step=self.num_timesteps)
+
+        if self.verbose >= 1:
             print(
                 f"[eval @ {self.num_timesteps:,d}] "
                 f"reward={sac_m['mean_reward']:+.3f}  "
@@ -132,7 +151,7 @@ class QuantflowEvalCallback(BaseCallback):
         if sac_m["mean_reward"] > self._best_reward and self._save_path:
             self._best_reward = sac_m["mean_reward"]
             self.model.save(self._save_path / "best_model")
-            if self._verbose >= 1:
+            if self.verbose >= 1:
                 print(f"  → new best ({self._best_reward:.3f}) — model saved")
 
         return True
@@ -220,9 +239,24 @@ def train(
         gamma         = sac_cfg.gamma,
         ent_coef      = sac_cfg.ent_coef,
         policy_kwargs = {"net_arch": sac_cfg.net_arch},
-        tensorboard_log = str(run_dir / "tb"),
         verbose       = 1,
+        # tensorboard_log omitted — not required; W&B logs directly
     )
+
+    wandb_active = False
+    if use_wandb:
+        if _WANDB_AVAILABLE:
+            _wandb.init(
+                project          = wandb_project,
+                name             = wandb_name,
+                config           = {**sac_cfg.__dict__, **(env_config or {})},
+                sync_tensorboard = False,   # no TensorBoard dependency
+                save_code        = False,
+            )
+            wandb_active = True
+            print(f"W&B run: {_wandb.run.url}")
+        else:
+            print("wandb not installed — skipping W&B logging")
 
     eval_cfg  = {**(env_config or {}), **_EVAL_ENV_CFG}
     callbacks = [
@@ -233,50 +267,21 @@ def train(
             save_path       = run_dir,
             as_gamma        = sac_cfg.as_baseline_gamma,
             as_kappa_offset = sac_cfg.as_baseline_kappa_offset,
+            use_wandb       = wandb_active,
         )
     ]
-
-    if use_wandb:
-        try:
-            import wandb
-            from wandb.integration.sb3 import WandbCallback
-
-            wandb.init(
-                project = wandb_project,
-                name    = wandb_name,
-                config  = {
-                    **sac_cfg.__dict__,
-                    **(env_config or {}),
-                },
-                sync_tensorboard = True,
-                save_code        = False,
-            )
-            callbacks.append(
-                WandbCallback(
-                    gradient_save_freq = 0,
-                    verbose            = 0,
-                )
-            )
-            print(f"W&B run: {wandb.run.url}")
-        except ImportError:
-            print("wandb not installed — skipping W&B logging")
 
     model.learn(
         total_timesteps     = sac_cfg.total_timesteps,
         callback            = CallbackList(callbacks),
-        tb_log_name         = "sac",
         reset_num_timesteps = True,
     )
 
     model.save(run_dir / "final_model")
     print(f"Final model saved → {run_dir / 'final_model.zip'}")
 
-    if use_wandb:
-        try:
-            import wandb
-            wandb.finish()
-        except ImportError:
-            pass
+    if wandb_active:
+        _wandb.finish()
 
     return model
 

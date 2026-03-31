@@ -13,6 +13,7 @@ crate-type = ["cdylib"]
 quantflow-core = { path = "../quantflow-core" }
 pyo3 = { version = "0.23", features = ["extension-module"] }
 pyo3-arrow = "0.7"
+arrow = { version = "54" }
 
 [build-dependencies]
 # maturin handles build configuration via pyproject.toml

@@ -27,3 +27,10 @@ python-source = "python"
 module-name = "quantflow.quantflow"
 manifest-path = "crates/quantflow-ffi/Cargo.toml"
 features = ["pyo3/extension-module"]
+
+[dependency-groups]
+dev = [
+    "maturin>=1.12.6",
+    "pyarrow>=23.0.1",
+    "pytest>=9.0.2",
+]

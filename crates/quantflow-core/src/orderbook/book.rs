@@ -22,6 +22,7 @@ pub struct OrderBookSnapshot {
 /// Asks: `Price` key so the map iterates lowest-to-highest.
 /// Each price level holds a FIFO `VecDeque<Order>` — the front is the oldest
 /// (highest priority) order at that price.
+#[derive(Clone)]
 pub struct OrderBook {
     pub(crate) bids: BTreeMap<Reverse<Price>, VecDeque<Order>>,
     pub(crate) asks: BTreeMap<Price, VecDeque<Order>>,

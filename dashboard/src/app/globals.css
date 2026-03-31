@@ -1,139 +1,151 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
 @custom-variant dark (&:is(.dark *));
 
+/* ── Bloomberg Terminal Color Palette ─────────────────────────────────────── */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
-  --color-sidebar-ring: var(--sidebar-ring);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar: var(--sidebar);
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
-  --color-ring: var(--ring);
-  --color-input: var(--input);
-  --color-border: var(--border);
-  --color-destructive: var(--destructive);
+  /* shadcn token overrides */
+  --color-background:        var(--background);
+  --color-foreground:        var(--foreground);
+  --color-card:              var(--card);
+  --color-card-foreground:   var(--card-foreground);
+  --color-border:            var(--border);
+  --color-input:             var(--input);
+  --color-ring:              var(--ring);
+  --color-primary:           var(--primary);
+  --color-primary-foreground:var(--primary-foreground);
+  --color-muted:             var(--muted);
+  --color-muted-foreground:  var(--muted-foreground);
+  --color-accent:            var(--accent);
   --color-accent-foreground: var(--accent-foreground);
-  --color-accent: var(--accent);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-muted: var(--muted);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-secondary: var(--secondary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-primary: var(--primary);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-popover: var(--popover);
-  --color-card-foreground: var(--card-foreground);
-  --color-card: var(--card);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
+  --color-destructive:       var(--destructive);
+
+  /* Bloomberg-specific tokens */
+  --color-bb-black:         #0a0a0a;
+  --color-bb-panel:         #111111;
+  --color-bb-border:        #1e1e1e;
+  --color-bb-border-bright: #333333;
+  --color-bb-orange:        #ff8c00;
+  --color-bb-amber:         #ffb700;
+  --color-bb-green:         #00d26a;
+  --color-bb-red:           #ff3b3b;
+  --color-bb-blue:          #4a9eff;
+  --color-bb-cyan:          #00e5ff;
+  --color-bb-text-bright:   #ffffff;
+  --color-bb-text-primary:  #cccccc;
+  --color-bb-text-muted:    #666666;
+  --color-bb-text-dim:      #444444;
+
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+  --font-sans: 'Inter', system-ui, sans-serif;
+
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
 }
 
+/* ── CSS Variables ─────────────────────────────────────────────────────────── */
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --background:         #0a0a0a;
+  --foreground:         #cccccc;
+  --card:               #111111;
+  --card-foreground:    #cccccc;
+  --border:             #1e1e1e;
+  --input:              #1e1e1e;
+  --ring:               #ff8c00;
+  --primary:            #ff8c00;
+  --primary-foreground: #0a0a0a;
+  --muted:              #1e1e1e;
+  --muted-foreground:   #666666;
+  --accent:             #1e1e1e;
+  --accent-foreground:  #cccccc;
+  --destructive:        #ff3b3b;
+  --radius:             0px;
 }
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
-}
-
-@theme inline {
-  --color-profit: #22c55e;
-  --color-loss: #ef4444;
-  --color-bid: #22c55e;
-  --color-ask: #ef4444;
-  --color-accent-finance: #3b82f6;
-  --color-muted-finance: #64748b;
-}
-
+/* ── Base Styles ───────────────────────────────────────────────────────────── */
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-[#1e1e1e];
+    border-radius: 0 !important;
+    box-sizing: border-box;
   }
   body {
-    @apply bg-background text-foreground;
-  }
-  html {
-    @apply font-sans;
+    background: #0a0a0a;
+    color: #cccccc;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.8rem;
+    -webkit-font-smoothing: none;
+    -moz-osx-font-smoothing: auto;
+    overflow: hidden;
   }
 }
+
+/* ── Scanline Overlay ──────────────────────────────────────────────────────── */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.03) 2px,
+    rgba(0, 0, 0, 0.03) 4px
+  );
+}
+
+/* ── Scrollbars ────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar        { width: 4px; height: 4px; }
+::-webkit-scrollbar-track  { background: #0a0a0a; }
+::-webkit-scrollbar-thumb  { background: #333; border-radius: 0; }
+::-webkit-scrollbar-thumb:hover { background: #ff8c00; }
+
+/* ── Selection ─────────────────────────────────────────────────────────────── */
+::selection { background: rgba(255, 140, 0, 0.3); color: #fff; }
+
+/* ── Animations ────────────────────────────────────────────────────────────── */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+.blink { animation: blink 1s step-end infinite; }
+
+@keyframes ticker-scroll {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(-100%); }
+}
+
+/* ── Glow Effects ──────────────────────────────────────────────────────────── */
+.glow-green  { text-shadow: 0 0 8px rgba(0, 210, 106, 0.5); }
+.glow-red    { text-shadow: 0 0 8px rgba(255, 59, 59, 0.5); }
+.glow-orange { text-shadow: 0 0 8px rgba(255, 140, 0, 0.5); }
+
+/* ── Bloomberg Table ───────────────────────────────────────────────────────── */
+.bb-table th {
+  color: #ff8c00;
+  text-transform: uppercase;
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+  border-bottom: 1px solid #1e1e1e;
+  padding: 4px 8px;
+  text-align: right;
+  font-weight: 500;
+}
+.bb-table th:first-child { text-align: left; }
+.bb-table td {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  padding: 3px 8px;
+  border-bottom: 1px solid #1a1a1a;
+  text-align: right;
+  color: #cccccc;
+}
+.bb-table td:first-child { text-align: left; color: #999; }
+.bb-table tr:hover td    { background: rgba(255, 140, 0, 0.04); }

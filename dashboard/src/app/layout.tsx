@@ -1,38 +1,27 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import Sidebar from "@/components/layout/Sidebar";
-import Header from "@/components/layout/Header";
+import TopBar from "@/components/terminal/TopBar";
+import FunctionKeyBar from "@/components/terminal/FunctionKeyBar";
+import StatusBar from "@/components/terminal/StatusBar";
+import CommandLine from "@/components/terminal/CommandLine";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
 export const metadata: Metadata = {
-  title: "QuantFlow",
-  description: "LOB reinforcement learning market-making dashboard",
+  title: "QUANTFLOW",
+  description: "High-frequency LOB simulation & RL market-making terminal",
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{ children: React.ReactNode }>) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} dark h-full`}>
-      <body className="h-full bg-zinc-950 text-zinc-100 antialiased">
+    <html lang="en" className="h-full">
+      <body className="h-full bg-[#0a0a0a] text-[#cccccc] overflow-hidden">
         <TooltipProvider>
-          <div className="flex h-full">
-            <Sidebar />
-            <div className="flex flex-col flex-1 overflow-hidden">
-              <Header />
-              <main className="flex-1 overflow-y-auto p-6">{children}</main>
-            </div>
+          <div className="flex flex-col h-full">
+            <TopBar />
+            <FunctionKeyBar />
+            <main className="flex-1 overflow-hidden">{children}</main>
+            <CommandLine />
+            <StatusBar />
           </div>
         </TooltipProvider>
       </body>

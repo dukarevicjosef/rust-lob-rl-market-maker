@@ -2,12 +2,11 @@
 set -e
 trap 'kill 0' EXIT
 
-echo "Starting QuantFlow dev servers..."
-echo "  Frontend: http://localhost:3000"
-echo "  Backend:  http://localhost:8000"
-echo "  API docs: http://localhost:8000/docs"
+echo -e "\033[38;5;208m[QUANTFLOW]\033[0m Starting development servers..."
+echo -e "\033[38;5;208m[BACKEND] \033[0m http://localhost:8000/docs"
+echo -e "\033[38;5;208m[FRONTEND]\033[0m http://localhost:3000"
 echo ""
 
 uv run uvicorn backend.main:app --reload --port 8000 &
-cd dashboard && npm run dev &
+cd /Users/josefdukarevic/Developer/rust-lob-rl-market-maker/dashboard && npm run dev &
 wait

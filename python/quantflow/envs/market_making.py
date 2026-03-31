@@ -301,7 +301,7 @@ class MarketMakingEnv(gym.Env):
 
     def _update_mid_returns(self, _sim_time: float) -> None:
         mid = self._sim.mid_price()
-        if mid is not None and self._prev_mid > 0.0:
+        if mid is not None and mid > 0.0 and self._prev_mid > 0.0:
             r = math.log(mid / self._prev_mid)
             self._mid_returns.append(r)
 

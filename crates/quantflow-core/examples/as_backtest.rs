@@ -76,7 +76,11 @@ fn main() {
     println!("  Final PnL        {:>+12.4}", final_pnl);
     println!("  Sharpe ratio     {:>12.4}", result.sharpe);
     println!("  Max drawdown     {:>12.4}", result.max_drawdown);
-    println!("  Calmar ratio     {:>12.4}", if calmar.is_finite() { format!("{calmar:>12.4}") } else { "         ∞".to_string() });
+    if calmar.is_finite() {
+        println!("  Calmar ratio     {:>+12.4}", calmar);
+    } else {
+        println!("  Calmar ratio     {:>12}", "∞");
+    }
     println!("  Fill rate        {:>11.1}%", result.fill_rate * 100.0);
     println!("  Total fills      {:>12}", n_fills);
     println!("  Round trips      {:>12}", result.n_round_trips);

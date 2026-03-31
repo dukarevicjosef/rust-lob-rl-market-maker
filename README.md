@@ -35,7 +35,7 @@ rust-lob-rl-market-maker/
 ## Building
 
 ```bash
-# Full test suite (178 tests)
+# Full test suite (185 tests)
 cargo test -p quantflow-core
 
 # Release build
@@ -43,6 +43,16 @@ cargo build -p quantflow-core --release
 
 # Q-Q plot: simulate, calibrate, visualise goodness-of-fit
 cargo run -p quantflow-core --example hawkes_qq | python3 scripts/plot_qq.py
+
+# AS backtest — full diagnostic report, σ auto-calibrated
+cargo run -p quantflow-core --example as_backtest --release -- --auto-sigma
+
+# AS backtest — manual parameters
+cargo run -p quantflow-core --example as_backtest --release -- \
+  --gamma 0.05 --kappa 0.5 --inv-limit 30 --auto-sigma
+
+# AS parameter grid search (γ × κ × inv_limit, rayon-parallelised)
+cargo run -p quantflow-core --example as_grid_search --release
 
 # Criterion benchmarks
 cargo bench --bench orderbook_bench -p quantflow-core
@@ -349,18 +359,41 @@ Two terms:
 - The spread narrows as κ → ∞ (extremely liquid market).
 - For a flat mid (σ = 0), the spread collapses to the pure liquidity term.
 
-### Practical parameter estimation
+### σ auto-calibration
 
-| Parameter | `estimate_sigma` | Realised volatility from recent trade prices |
-|---|---|---|
-| κ | `estimate_kappa` | (Depth at best bid + depth at best ask) / (2 × spread) |
+In practice, the correct value of σ for a given instrument is not known in advance and changes intraday. Using a misconfigured σ breaks the strategy: a σ that is too small produces quotes that are too tight, creating severe adverse selection; a σ that is too large produces quotes far from mid that never fill.
 
-The σ estimator uses log-returns of consecutive trades:
+The `with_auto_sigma` constructor enables a warm-up phase: the strategy observes the first `warm_up_events` (default 500) mid-price movements without placing any quotes, then estimates σ from the realised mid-price series using quadratic variation:
+
 ```
-σ̂ = std_dev{log(p_k / p_{k-1}) : k = last_window trades}
+σ̂² = Σ_k (log s_{t_k} − log s_{t_{k−1}})² / T_total
 ```
 
-The κ estimator is a heuristic: a deep, tight book implies rapid fill arrival near the touch. In production, κ would be calibrated from historical fill data by fitting the fill rate as a function of quote offset.
+This is the continuous-time realised variance estimator. Dividing the sum of squared log-returns by total elapsed time T (not by the number of observations) gives σ in price units per second, consistent with the AS model's Brownian motion assumption.
+
+```rust
+// σ estimated from first 500 mid-price observations; no quotes during warm-up
+let strat = AvellanedaStoikov::with_auto_sigma(
+    0.05,   // γ
+    0.5,    // κ
+    3600.0, // T
+    30,     // inventory limit
+    0.0,    // spread floor
+);
+```
+
+### Spread floor
+
+The AS formula produces arbitrarily tight spreads as `τ → 0` (end of day) or when σ is small. In practice, a minimum spread is necessary because:
+- Exchange fees impose a minimum cost per round-trip.
+- Adverse selection from informed flow is never zero.
+- Wide markets in the underlying can cause fills at prices away from the quoted mid.
+
+The `spread_floor` parameter sets a minimum half-spread. Any quote where the AS formula yields a half-spread below `spread_floor` is widened to `spread_floor`:
+
+```
+half_spread = max(γσ²τ/2 + (1/γ)·ln(1 + γ/κ), spread_floor)
+```
 
 ### Backtest mechanics
 
@@ -368,9 +401,36 @@ The backtest runs against the Hawkes LOB simulator, refreshing quotes every seco
 
 1. **Fill detection:** After each market event, check whether any of the agent's resting orders appear as `maker_id` in the returned trades. If so, update cash and inventory.
 
-2. **Quote refresh:** Cancel the current bid/ask, compute new quotes via the AS formula, and place fresh limit orders — provided the inventory limit `|q| + quote_qty ≤ inventory_limit` is satisfied.
+2. **Quote refresh:** Cancel the current bid/ask, compute new quotes via the AS formula, and place fresh limit orders — provided the pre-fill inventory check `|inventory ± quote_qty| ≤ inventory_limit` is satisfied.
 
-3. **Mark-to-market PnL:** At each book snapshot, compute `cash + inventory × mid_price`. This is the theoretical liquidation value assuming the agent could close the position at mid.
+3. **Mark-to-market PnL:** At each book snapshot, compute `cash + inventory × mid_price`.
+
+### PnL decomposition
+
+`BacktestResult` decomposes total PnL into two components that diagnose strategy health:
+
+```
+Net PnL = Spread PnL + Inventory PnL
+```
+
+- **Spread PnL** (`spread_pnl`): income from capturing the bid-ask spread — `Σ |fill_price − mid_at_fill| × qty`. Always ≥ 0. This is the pure market-making revenue.
+
+- **Inventory PnL** (`inventory_pnl`): mark-to-market gains/losses from holding a net position while prices drift — `Net PnL − Spread PnL`. Typically negative when the strategy is adversely selected.
+
+The ratio `|Inventory PnL| / Spread PnL` is the key diagnostic: values below 50% indicate a well-hedged strategy where spread income comfortably exceeds directional loss; values above 100% mean the strategy is losing money overall despite earning the spread.
+
+### Adverse selection analysis
+
+For each fill, `BacktestResult` records the mid-price move at 1 s, 5 s, and 10 s after execution:
+
+- **Ask fill:** adverse if mid moves up after we sold (we were hit by an informed buyer who knew the price would rise).
+- **Bid fill:** adverse if mid moves down after we bought (we were hit by an informed seller who knew the price would fall).
+
+```
+adverse_move(δt) = E[sign(fill_direction) · (mid_{t+δt} − mid_t)]
+```
+
+Positive values indicate systematic adverse selection — counterparties have information advantage. If `adverse_move(1s) > half_spread`, the strategy cannot break even in expectation and must either widen quotes or reduce exposure.
 
 ### Performance metrics
 
@@ -378,26 +438,69 @@ The backtest runs against the Hawkes LOB simulator, refreshing quotes every seco
 |---|---|---|
 | **Sharpe ratio** | `mean(ΔPnL) / std(ΔPnL) · √n` | Risk-adjusted return; > 1.0 indicates a viable strategy |
 | **Max drawdown** | `max(peak − current PnL)` | Worst peak-to-trough loss; measures tail risk |
-| **Fill rate** | `fills / quotes_placed` | Fraction of placed orders that were executed; low rate = quotes too far from mid |
+| **Calmar ratio** | `final_pnl / max_drawdown` | Return per unit of drawdown risk |
+| **Fill rate** | `fills / quotes_placed` | Fraction of placed orders executed; low = quotes too far from mid |
+| **Time-in-market** | `events_with_open_quote / total_events` | Quote exposure fraction; low = frequent warm-up / inventory blocks |
 
 ```rust
 use quantflow_core::strategy::AvellanedaStoikov;
 use quantflow_core::simulator::HawkesLobSimulator;
 
 let mut sim = HawkesLobSimulator::default_12d().unwrap();
-let strat = AvellanedaStoikov::default_params(sim.config.t_max);
+let strat = AvellanedaStoikov::with_auto_sigma(0.05, 0.5, 3600.0, 30, 0.0);
 let result = strat.run_backtest(&mut sim, /*seed=*/ 42);
 
-println!("Final PnL:    {:.2}", result.final_pnl());
-println!("Sharpe:       {:.3}", result.sharpe);
-println!("Max drawdown: {:.2}", result.max_drawdown);
-println!("Fill rate:    {:.1}%", result.fill_rate * 100.0);
-println!("Max inventory: {}", result.max_inventory());
+println!("Spread PnL:   {:+.2}", result.spread_pnl);
+println!("Inventory PnL:{:+.2}", result.inventory_pnl);
+println!("Sharpe:        {:.3}", result.sharpe);
+println!("Calmar:        {:.3}", result.calmar_ratio());
+println!("Adverse (1s):  {:.5}", result.post_fill_move_1s);
 ```
 
 ---
 
-## 6. Limit Order Book Engine (`orderbook/`)
+## 6. Parameter Grid Search (`examples/as_grid_search.rs`)
+
+### Motivation
+
+The AS formula is a three-parameter family (γ, κ, inv_limit). No single set of parameters is universally optimal: the correct γ depends on realised volatility; the correct κ depends on book depth; the correct inv_limit depends on capital and risk appetite. Rather than hand-tuning, the grid search exhaustively evaluates the cross-product of candidate values and surfaces which combinations produce robust positive Sharpe across multiple market regimes (seeds).
+
+### Grid axes
+
+| Parameter | Values | Rationale |
+|---|---|---|
+| γ (risk aversion) | 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1.0 | Spans from near-neutral (0.05) to strongly risk-averse (1.0) |
+| κ (fill intensity) | 0.5, 1.0, 1.5, 2.0, 3.0 | Liquid (high κ, tight spread) to illiquid (low κ, wide spread) |
+| inv_limit | 10, 20, 30, 50 | Conservative to permissive inventory constraint |
+| σ | auto | Quadratic variation warm-up; no manual σ in search |
+
+Total: 7 × 5 × 4 = 140 combinations × 5 seeds = 700 independent backtest runs.
+
+### Parallelisation
+
+Each combination is independent — no shared state between (γ, κ, inv_limit) runs. The search uses **rayon**'s `par_iter` to distribute work across all available cores. On an 8-core machine a 1-hour grid search completes in under 3 minutes in release mode.
+
+### Output
+
+```
+  Rank │ γ     │ σ    │ κ   │ inv_lim │ Sharpe │ PnL (mean±std)    │ MaxDD   │ FillRate
+  ─────┼───────┼──────┼─────┼─────────┼────────┼───────────────────┼─────────┼─────────
+  1    │ 0.05  │ auto │ 0.5 │ 30      │  +2.18 │ +1475 ± 537       │     348 │    30.4%
+  2    │ 0.05  │ auto │ 0.5 │ 10      │  +1.67 │ +480 ± 226        │     196 │    34.2%
+  ...
+```
+
+Followed by **marginal Sharpe bar charts** — average Sharpe holding each parameter fixed while marginalising over the others. This reveals the dominant sensitivity: if the γ bar chart shows a monotone decline from γ=0.05 to γ=1.0, risk aversion is the primary lever; if the inv_limit chart is flat, the strategy is insensitive to position limits at these scales.
+
+The best configuration is reproduced as a ready-to-run command:
+```bash
+cargo run -p quantflow-core --example as_backtest --release -- \
+  --gamma 0.05 --kappa 0.5 --inv-limit 30 --auto-sigma
+```
+
+---
+
+## 7. Limit Order Book Engine (`orderbook/`)
 
 ### Price representation
 
@@ -446,7 +549,7 @@ Parses the [LOBSTER](https://lobsterdata.com) historical equity order book forma
 
 ## Test suite
 
-178 tests across all modules:
+185 tests across all modules:
 
 ```bash
 cargo test -p quantflow-core
@@ -464,7 +567,7 @@ cargo test -p quantflow-core
 | `hawkes::calibration` | 16 | Gradient correctness, convergence, KS test, goodness-of-fit |
 | `simulator` | 9 | Initialisation, event dispatch, U-shape, snapshot structure |
 | `metrics::stylized_facts` | 11 | Kurtosis, ACF, spread, signature plot, intraday pattern |
-| `strategy::avellaneda` | 18 | Quote formulas, σ/κ estimation, backtest fill/inventory/drawdown |
+| `strategy::avellaneda` | 25 | Quote formulas, σ auto-cal, spread floor, PnL decomposition, adverse selection, backtest fill/inventory/drawdown |
 | Integration | 7 | End-to-end LOBSTER replay, final book state |
 
 ---
@@ -495,6 +598,10 @@ cargo test -p quantflow-core
 - [x] 12-dimensional Hawkes-LOB simulator with intraday U-shape
 - [x] Stylized facts validation
 - [x] Avellaneda-Stoikov market-making baseline + backtest
+- [x] σ auto-calibration from realised mid-price volatility (quadratic variation)
+- [x] Spread floor, inventory-aware pre-fill breach check
+- [x] Full diagnostic report: PnL decomposition, adverse selection (1s/5s/10s), quote statistics, Calmar ratio
+- [x] Parameter grid search (γ × κ × inv_limit, rayon-parallelised, 5 seeds, top-N by Sharpe)
 - [ ] PyO3 bindings: `PyOrderBook`, `PyHawkesLobSimulator`
 - [ ] `python/env.py` — Gymnasium `MarketMakerEnv`
 - [ ] `python/agent.py` — SB3 PPO/SAC wrappers

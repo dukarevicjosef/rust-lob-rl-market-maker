@@ -16,6 +16,11 @@ dist/
 data/*.parquet
 data/*.csv
 
+# Training outputs
+runs/
+results/
+wandb/
+
 # Tool config — never commit
 CLAUDE.md
 .claude/

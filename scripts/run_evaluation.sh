@@ -12,16 +12,16 @@ echo "  Episodes: $N_EPISODES"
 echo "  Output:   $OUTPUT"
 echo ""
 
-python -m quantflow.evaluation.compare \
+uv run python -m quantflow.evaluation.compare \
     --model-path "$MODEL" \
     --n-episodes "$N_EPISODES" \
     --output-dir "$OUTPUT"
 
-python -m quantflow.evaluation.report \
+uv run python -m quantflow.evaluation.report \
     --input "$OUTPUT/results.parquet" \
     --output-dir "$OUTPUT"
 
-python -m quantflow.evaluation.plots \
+uv run python -m quantflow.evaluation.plots \
     --input "$OUTPUT/results.parquet" \
     --output-dir "$OUTPUT/plots"
 

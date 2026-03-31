@@ -1,1 +1,3 @@
-// Market-making strategy traits and Avellaneda-Stoikov reference implementation.
+pub mod avellaneda;
+
+pub use avellaneda::{AvellanedaStoikov, BacktestResult};

@@ -314,8 +314,7 @@ impl HawkesLobSimulator {
                 ask_id, Side::Ask, ask_price, qty, Timestamp(0), OrderType::Limit,
             ));
         }
-        // Suppress unused variable warning.
-        let _ = tick;
+        let _ = tick; // used indirectly through price arithmetic above
     }
 
     /// Dispatch a Hawkes event to the appropriate LOB action.
@@ -508,6 +507,34 @@ impl HawkesLobSimulator {
                 self.book.modify_order(id, new_qty);
             }
         }
+    }
+
+    // ── Strategy interface ────────────────────────────────────────────────────
+
+    /// Current mid-price as a float. Returns `None` if the book is one-sided.
+    pub fn mid_price(&self) -> Option<f64> {
+        self.book.mid_price().map(|p| p.to_f64())
+    }
+
+    /// Place a resting limit order on behalf of an external agent.
+    ///
+    /// Returns the assigned `OrderId` so the caller can track fills and cancel.
+    /// The order is inserted directly without going through the matching engine;
+    /// the strategy is responsible for ensuring bid < best_ask and ask > best_bid.
+    pub fn place_limit_order(&mut self, side: Side, price: Price, qty: Quantity) -> OrderId {
+        let id = self.next_id();
+        self.book.insert_resting(Order::new(id, side, price, qty, Timestamp(0), OrderType::Limit));
+        id
+    }
+
+    /// Cancel an agent order by ID. No-op if the ID is not found.
+    pub fn cancel_agent_order(&mut self, id: OrderId) {
+        self.book.cancel_order(id);
+    }
+
+    /// Read-only access to the order book (for strategy observation).
+    pub fn book(&self) -> &OrderBook {
+        &self.book
     }
 }
 

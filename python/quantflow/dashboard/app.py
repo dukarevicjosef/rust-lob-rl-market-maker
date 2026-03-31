@@ -45,11 +45,19 @@ AGENT_ORDER = ["Naive Symmetric", "Static AS", "Optimized AS", "SAC"]
 with st.sidebar:
     st.markdown("### 📈 quantflow")
     st.divider()
+    _PAGES = {
+        "🏛️  Live LOB":         "lob",
+        "📊  Agent Performance": "performance",
+        "📉  Stylized Facts":    "stylized",
+        "⚡  Benchmarks":        "benchmarks",
+    }
     page = st.radio(
         "page",
-        ["🏛️  Live LOB", "📊  Agent Performance", "📉  Stylized Facts", "⚡  Benchmarks"],
+        list(_PAGES.keys()),
+        key="nav",
         label_visibility="collapsed",
     )
+    _page_key = _PAGES[page]
     st.divider()
     st.caption("Hawkes-driven LOB + SAC market-making agent")
 
@@ -682,7 +690,10 @@ def page_benchmarks() -> None:
 # Router
 # ═══════════════════════════════════════════════════════════════════════════════
 
-if   "Live LOB"          in page: page_lob()
-elif "Agent Performance" in page: page_performance()
-elif "Stylized Facts"    in page: page_stylized_facts()
-elif "Benchmarks"        in page: page_benchmarks()
+_DISPATCH = {
+    "lob":         page_lob,
+    "performance": page_performance,
+    "stylized":    page_stylized_facts,
+    "benchmarks":  page_benchmarks,
+}
+_DISPATCH[_page_key]()

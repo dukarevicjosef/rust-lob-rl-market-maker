@@ -25,6 +25,10 @@ wandb/
 CLAUDE.md
 .claude/
 
+# Frontend
+dashboard/node_modules/
+dashboard/.next/
+
 # IDE
 .idea/
 .vscode/

@@ -1,13 +1,13 @@
 # rust-lob-rl-market-maker
 
-A high-performance limit order book (LOB) engine written in Rust, with a full quantitative market-microstructure stack: a Hawkes process library for realistic order-flow simulation, a Hawkes-driven LOB simulator, and an Avellaneda-Stoikov market-making strategy with backtest. The architecture is designed as the foundation for a reinforcement learning market-making agent: the Rust core handles matching and market data at low latency; a Python layer (via PyO3) will expose a Gymnasium-compatible environment for RL training.
+A high-performance limit order book (LOB) engine written in Rust, with a full quantitative market-microstructure stack and a reinforcement learning training pipeline. The Rust core handles matching and market data simulation at low latency; a PyO3 extension module exposes the engine to Python; a Gymnasium-compatible environment drives SAC training via stable-baselines3; and an evaluation suite compares the learned policy against Avellaneda-Stoikov baselines.
 
 ## Repository layout
 
 ```
 rust-lob-rl-market-maker/
 ├── crates/
-│   ├── quantflow-core/
+│   ├── quantflow-core/              # Pure-Rust library (no Python dependency)
 │   │   └── src/
 │   │       ├── orderbook/
 │   │       │   ├── types.rs         # Price, Quantity, OrderId, Side, OrderType, Timestamp
@@ -26,16 +26,41 @@ rust-lob-rl-market-maker/
 │   │       │   └── stylized_facts.rs # Return kurtosis, ACF, spread dist, signature plot, intraday
 │   │       └── strategy/
 │   │           └── avellaneda.rs    # Avellaneda-Stoikov (2008) + BacktestResult
-│   └── quantflow-ffi/               # PyO3 extension module (wip)
+│   └── quantflow-ffi/               # PyO3 extension module (maturin build)
+│       └── src/
+│           ├── lib.rs               # #[pymodule] entry point
+│           ├── orderbook.rs         # PyOrderBook
+│           ├── simulator.rs         # PyHawkesSimulator
+│           ├── strategy.rs          # PyAvellanedaStoikov
+│           └── functions.rs         # calibrate_hawkes(), load_lobster()
+├── python/
+│   └── quantflow/
+│       ├── envs/
+│       │   └── market_making.py     # MarketMakingEnv (gymnasium.Env)
+│       ├── training/
+│       │   ├── train.py             # SAC training loop + callbacks
+│       │   └── evaluate.py          # Quick policy evaluation helper
+│       ├── evaluation/
+│       │   ├── compare.py           # 4-strategy comparison → Parquet
+│       │   ├── report.py            # Formatted report + PnL decomposition
+│       │   └── plots.py             # 6 matplotlib plots
+│       └── features.py              # LOB microstructure feature engineering
+├── tests/
+│   ├── test_ffi.py                  # 27 PyO3 binding tests
+│   ├── test_env.py                  # 18 Gymnasium env tests
+│   └── test_features.py             # 49 feature + RunningNormalizer tests
 ├── scripts/
-│   └── plot_qq.py                   # Q-Q plot visualisation (matplotlib)
-└── pyproject.toml
+│   ├── plot_qq.py                   # Q-Q plot visualisation (matplotlib)
+│   └── run_evaluation.sh            # End-to-end evaluation pipeline
+└── pyproject.toml                   # uv project; maturin build backend
 ```
 
 ## Building
 
+### Rust
+
 ```bash
-# Full test suite (185 tests)
+# Full Rust test suite (185 tests)
 cargo test -p quantflow-core
 
 # Release build
@@ -56,6 +81,29 @@ cargo run -p quantflow-core --example as_grid_search --release
 
 # Criterion benchmarks
 cargo bench --bench orderbook_bench -p quantflow-core
+```
+
+### Python (PyO3 extension + training)
+
+```bash
+# Create virtualenv and install dependencies
+uv venv --python 3.12 && source .venv/bin/activate
+uv sync
+
+# Build the Rust extension in-place (required before any Python import)
+maturin develop --release
+
+# Run Python test suite (94 tests: env, features, FFI bindings)
+uv run pytest tests/ -v
+
+# Quick training run (50k steps, no W&B)
+uv run python -m quantflow.training.train --timesteps 50000 --run-dir runs/sac_test
+
+# Full training run with Weights & Biases
+uv run python -m quantflow.training.train --final --wandb --wandb-project quantflow-mm
+
+# End-to-end evaluation (compare → report → 6 plots)
+bash scripts/run_evaluation.sh runs/sac_test/best_model.zip 50
 ```
 
 ---
@@ -547,13 +595,257 @@ Parses the [LOBSTER](https://lobsterdata.com) historical equity order book forma
 
 ---
 
-## Test suite
+## 8. PyO3 FFI Bindings (`crates/quantflow-ffi`)
 
-185 tests across all modules:
+The `quantflow-ffi` crate compiles to a Python extension module (`quantflow.so`) via [maturin](https://github.com/PyO3/maturin). It wraps the Rust core with zero-copy data transfer via the Arrow C Data Interface (PyCapsule protocol) — no serialisation between Rust and Python for order book snapshots or trade records.
+
+### Exposed classes and functions
+
+| Symbol | Type | Description |
+|---|---|---|
+| `PyOrderBook` | class | Live order book: `add_limit_order`, `cancel_order`, `best_bid/ask`, `snapshot(n)` → `pa.RecordBatch` |
+| `PyHawkesSimulator` | class | Simulator: `reset(seed)`, `step()`, `place_limit_order`, `cancel_agent_order`, `get_book()`, `mid_price()` |
+| `PyAvellanedaStoikov` | class | AS strategy: `compute_quotes(mid, inventory, t)`, `sigma`, `gamma`, `kappa` properties |
+| `calibrate_hawkes(events, d)` | function | Fit exponential Hawkes to a list of `{time, event_type}` dicts; returns μ, α, β, NLL |
+| `load_lobster(msg_path, book_path)` | function | Parse LOBSTER CSV files; returns `{messages, snapshots}` as Arrow RecordBatches |
+
+### Zero-copy snapshot format
+
+`PyOrderBook.snapshot(n)` and `PyHawkesSimulator.get_book().snapshot(n)` return a `pyarrow.RecordBatch` with columns:
+
+```
+bid_price  float64  (NaN = empty level)
+bid_qty    uint64
+ask_price  float64  (NaN = empty level)
+ask_qty    uint64
+```
+
+The RecordBatch is constructed in Rust and transferred via Arrow's PyCapsule Interface — the Python side holds a view into Rust-allocated memory with no copy.
+
+```python
+from quantflow import HawkesSimulator, AvellanedaStoikov
+
+sim = HawkesSimulator.new({"t_max": 3600.0})
+sim.reset(42)
+
+strat = AvellanedaStoikov(gamma=0.05, kappa=0.5, t_end=3600.0)
+
+while (event := sim.step()) is not None:
+    mid = sim.mid_price()
+    if mid:
+        bid, ask = strat.compute_quotes(mid=mid, inventory=0, t=event["sim_time"])
+```
+
+---
+
+## 9. Gymnasium MarketMakingEnv (`python/quantflow/envs/market_making.py`)
+
+`MarketMakingEnv` wraps the Hawkes LOB simulator in a `gymnasium.Env`. The agent controls Avellaneda-Stoikov parameters each step; the Rust AS formula translates them into live limit orders on the book.
+
+### Observation space (`gymnasium.spaces.Dict`)
+
+| Key | Shape | Range | Description |
+|---|---|---|---|
+| `lob_state` | (20,) | [−1, 1] | 5 bid + 5 ask levels; each: (Δprice/mid, qty/max_qty_scale) |
+| `volume_imbalance` | (1,) | [−1, 1] | (V_bid − V_ask) / (V_bid + V_ask) |
+| `spread` | (1,) | [0, 1] | Bid-ask spread / mid |
+| `mid_price_return` | (1,) | [−1, 1] | log(mid_t / mid_{t-1}), clipped to ±10% |
+| `volatility` | (1,) | [0, 1] | Rolling realised vol (quadratic variation), clipped |
+| `inventory` | (1,) | [−1, 1] | Signed inventory / inventory_limit |
+| `pnl` | (1,) | [−1, 1] | Mark-to-market PnL / (initial_mid × inventory_limit) |
+| `time_remaining` | (1,) | [0, 1] | 1 − t / T |
+
+### Action space (`Box(2,)`)
+
+| Index | Parameter | Range | Effect |
+|---|---|---|---|
+| 0 | γ (risk aversion) | [0.01, 1.0] | Controls spread width and inventory skew |
+| 1 | κ-offset | [−0.5, 0.5] | Multiplier: κ = κ_base × (1 + offset) |
+
+### Reward
+
+```
+R = ΔPnL  −  φ·|q|  −  ψ·q²  −  λ·max(0, |q|−K)
+```
+
+Linear and quadratic inventory penalties (φ, ψ) encourage active hedging; the hard-breach term (λ) penalises exceeding `inventory_limit` K.
+
+### Fill detection
+
+After each `events_per_step` Hawkes events, the env checks whether any trade `maker_id` matches the agent's resting bid or ask order ID. On a match, cash and inventory are updated. This is exact — no proxy fill model.
+
+```python
+import gymnasium as gym
+
+env = gym.make("quantflow/MarketMaking-v0")
+obs, _ = env.reset(seed=42)
+
+for _ in range(1000):
+    action = env.action_space.sample()
+    obs, reward, terminated, truncated, info = env.step(action)
+    if terminated or truncated:
+        obs, _ = env.reset()
+```
+
+---
+
+## 10. LOB Microstructure Features (`python/quantflow/features.py`)
+
+Seven pure functions operating on `pyarrow.RecordBatch` snapshots and trade dicts. All functions are stateless and can be combined into a feature vector for the RL agent or any downstream model.
+
+| Function | Input | Output | Formula |
+|---|---|---|---|
+| `volume_imbalance(snapshot, level)` | LOB snapshot | float ∈ (−1, 1) | (V_bid − V_ask) / (V_bid + V_ask) |
+| `weighted_mid_price(snapshot)` | LOB snapshot | float | Σ(P_ask·V_bid + P_bid·V_ask) / Σ(V_bid + V_ask) — Stoikov microprice |
+| `depth_ratio(snapshot, levels)` | LOB snapshot | float > 0 | Σ V^b / Σ V^a |
+| `spread_bps(snapshot)` | LOB snapshot | float ≥ 0 | (ask − bid) / mid × 10,000 |
+| `order_flow_imbalance(trades, window, mid)` | Trade list | float ∈ (−1, 1) | (V_buy − V_sell) / total; tick-rule fallback |
+| `realized_volatility(trades, window, ann_factor)` | Trade list | float ≥ 0 | √(Σ r_k² · ann_factor / n) — quadratic variation |
+| `trade_arrival_rate(trades, timestamps, window_s)` | Trade list + times | float ≥ 0 | Count(t ∈ [t_end − W, t_end]) / W |
+
+`compute_all(snapshot, trades, timestamps, mid)` returns all eight features as a `float32` array of shape `(8,)` in the order of `FEATURE_NAMES`.
+
+### RunningNormalizer
+
+Online mean/variance tracking using Welford's (1962) one-pass algorithm. Numerically stable — avoids catastrophic cancellation from the two-pass `Σx² − n·mean²` formula.
+
+```python
+from quantflow.features import compute_all, RunningNormalizer
+
+normalizer = RunningNormalizer(n_features=8)
+
+# Each env step:
+features = compute_all(snapshot, trades, timestamps=sim_times, mid=mid)
+normalizer.update(features)
+z = normalizer.normalize(features)   # ≈ N(0, 1) after warm-up
+
+# Persist for inference deployment
+normalizer.save("normalizer.json")
+normalizer2 = RunningNormalizer.load("normalizer.json")
+```
+
+---
+
+## 11. SAC Training Pipeline (`python/quantflow/training/`)
+
+Trains a Soft Actor-Critic agent with `MultiInputPolicy` (required for Dict observation spaces). All hyperparameters are grouped in `SACConfig`.
+
+### Configuration
+
+```python
+from quantflow.training.train import SACConfig
+
+cfg = SACConfig(
+    policy         = "MultiInputPolicy",   # Dict obs → CombinedExtractor + MLP
+    learning_rate  = 3e-4,
+    buffer_size    = 1_000_000,
+    batch_size     = 256,
+    tau            = 0.005,
+    gamma          = 0.99,
+    ent_coef       = "auto",               # automatic entropy tuning
+    net_arch       = [256, 256],
+    total_timesteps = 1_000_000,           # 2M for final run
+)
+```
+
+### QuantflowEvalCallback
+
+Fires every `eval_freq` steps (default 10k). Runs `n_eval_episodes` (default 5) episodes with the current deterministic policy **and** a static AS baseline with the same env. Logs to SB3's stdout logger and optionally to W&B via direct `wandb.log()` — no TensorBoard dependency.
+
+| Logged key | Description |
+|---|---|
+| `eval/mean_reward` | Mean cumulative episode reward |
+| `eval/mean_pnl` | Mean mark-to-market PnL at episode end |
+| `eval/mean_sharpe` | Per-episode Sharpe: mean(r) / std(r) · √n |
+| `eval/mean_inventory_std` | Mean inventory standard deviation |
+| `baseline/mean_pnl` | Same metrics for static AS (γ=0.1) |
+| `delta/pnl` | SAC − AS baseline PnL |
+| `delta/sharpe` | SAC − AS baseline Sharpe |
+
+Best model (by mean reward) is saved to `<run_dir>/best_model.zip` automatically.
+
+### W&B integration
+
+No TensorBoard installation required. Pass `--wandb` to enable:
 
 ```bash
-cargo test -p quantflow-core
+uv run python -m quantflow.training.train \
+    --final \
+    --wandb --wandb-project quantflow-mm \
+    --run-dir runs/sac_final
 ```
+
+---
+
+## 12. Evaluation Framework (`python/quantflow/evaluation/`)
+
+Three-stage pipeline comparing SAC against three fixed-action baselines.
+
+### Strategies compared
+
+| Agent | Action | Description |
+|---|---|---|
+| Naive Symmetric | γ=0.5, κ-offset=0 | Wide symmetric quotes, no inventory adaptation |
+| Static AS | γ=0.1, κ-offset=0 | Conservative risk aversion, fixed parameters |
+| Optimized AS | γ=0.05, κ-offset=0 | Best γ from grid search |
+| SAC | deterministic policy | Trained agent |
+
+### Stage 1 — `compare.py`
+
+Runs all four strategies for N episodes, collects per-step trajectories, computes PnL decomposition:
+
+```
+inventory_pnl = final_inventory × (final_mid − initial_mid)   [price drift exposure]
+spread_pnl    = total_pnl − inventory_pnl                      [spread capture revenue]
+```
+
+Saves `results.parquet` (episode summaries) and `trajectories.parquet` (per-step data).
+
+### Stage 2 — `report.py`
+
+Loads `results.parquet` and prints:
+- Performance table: PnL±std, Sharpe±std, MaxDD, FillRate, InvStd, Quote-to-Trade
+- PnL decomposition table: Spread PnL vs Inventory PnL per strategy
+- SAC vs Optimized AS delta summary
+
+### Stage 3 — `plots.py`
+
+Six matplotlib plots saved as PNG (seaborn-v0_8-whitegrid style, 150 dpi):
+
+| File | Description |
+|---|---|
+| `cumulative_pnl.png` | Median PnL curve + 25/75 percentile band per strategy |
+| `pnl_distribution.png` | Box plot of episode-end PnL |
+| `inventory_trajectories.png` | Inventory paths for one seed, all strategies |
+| `sharpe_comparison.png` | Bar chart with ±1 std error bars |
+| `fillrate_vs_risk.png` | Scatter: mean fill rate vs mean inventory std |
+| `pnl_decomposition.png` | Stacked bar: spread PnL + inventory PnL |
+
+### Running the full pipeline
+
+```bash
+bash scripts/run_evaluation.sh runs/sac_test/best_model.zip 50
+# → results/evaluation/results.parquet
+# → results/evaluation/trajectories.parquet
+# → results/evaluation/report.txt
+# → results/evaluation/plots/*.png
+```
+
+---
+
+## Test suite
+
+185 Rust tests + 94 Python tests across all modules:
+
+```bash
+# Rust
+cargo test -p quantflow-core
+
+# Python (requires maturin develop --release first)
+uv run pytest tests/ -v
+```
+
+**Rust (185 tests)**
 
 | Module | Tests | Coverage |
 |---|---|---|
@@ -569,6 +861,14 @@ cargo test -p quantflow-core
 | `metrics::stylized_facts` | 11 | Kurtosis, ACF, spread, signature plot, intraday pattern |
 | `strategy::avellaneda` | 25 | Quote formulas, σ auto-cal, spread floor, PnL decomposition, adverse selection, backtest fill/inventory/drawdown |
 | Integration | 7 | End-to-end LOBSTER replay, final book state |
+
+**Python (94 tests)**
+
+| Module | Tests | Coverage |
+|---|---|---|
+| `tests/test_ffi.py` | 27 | PyOrderBook (empty, insert, cross, cancel, snapshot), PyHawkesSimulator (create, reset, step, day), PyAvellanedaStoikov (construction, quotes, repr) |
+| `tests/test_env.py` | 18 | Gymnasium compliance, observation/action spaces, reset contract, fills, inventory bounds, termination, `gym.make` |
+| `tests/test_features.py` | 49 | All 7 feature functions (edge cases, window clipping, tick rule), `compute_all`, `RunningNormalizer` (Welford convergence, serialisation, constant-feature stability) |
 
 ---
 
@@ -602,10 +902,15 @@ cargo test -p quantflow-core
 - [x] Spread floor, inventory-aware pre-fill breach check
 - [x] Full diagnostic report: PnL decomposition, adverse selection (1s/5s/10s), quote statistics, Calmar ratio
 - [x] Parameter grid search (γ × κ × inv_limit, rayon-parallelised, 5 seeds, top-N by Sharpe)
-- [ ] PyO3 bindings: `PyOrderBook`, `PyHawkesLobSimulator`
-- [ ] `python/env.py` — Gymnasium `MarketMakerEnv`
-- [ ] `python/agent.py` — SB3 PPO/SAC wrappers
-- [ ] RL training loop
+- [x] PyO3 FFI bindings: `PyOrderBook`, `PyHawkesSimulator`, `PyAvellanedaStoikov`, `calibrate_hawkes`, `load_lobster`
+- [x] Zero-copy Arrow RecordBatch transfer via PyCapsule Interface
+- [x] Gymnasium `MarketMakingEnv` — Dict obs space, AS-parameterised actions, fill detection, warm-up
+- [x] LOB microstructure feature engineering (7 functions, `RunningNormalizer`, `compute_all`)
+- [x] SAC training pipeline (SB3 `MultiInputPolicy`, auto entropy, W&B integration, best-model checkpointing)
+- [x] Evaluation framework: 4-strategy comparison, Parquet persistence, 6 matplotlib plots
+- [ ] Calibrate Hawkes parameters to real LOBSTER data; retrain on calibrated simulator
+- [ ] PPO comparison vs SAC
+- [ ] Multi-asset extension (correlated LOBs)
 
 ---
 

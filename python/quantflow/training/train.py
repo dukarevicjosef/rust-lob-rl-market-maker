@@ -64,6 +64,19 @@ class SACConfig:
     as_baseline_kappa_offset: float = 0.0
 
 
+# Default environment config — reward v2 tuned parameters
+_DEFAULT_ENV_CFG: dict[str, Any] = {
+    "reward_config": {
+        "phi":                 0.01,
+        "psi":                 0.001,
+        "lambda_breach":       1.0,
+        "rt_weight":           0.5,
+        "asymmetric_strength": 0.3,
+        "terminal_weight":     2.0,
+        "reward_version":      "v2",
+    },
+}
+
 # Shorter episode config used inside callbacks to keep evaluation fast
 _EVAL_ENV_CFG: dict[str, Any] = {
     "episode_length":  500,
@@ -227,7 +240,8 @@ def train(
     run_dir = Path(run_dir or "runs/sac")
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    env = MarketMakingEnv(env_config)
+    merged_env_cfg = {**_DEFAULT_ENV_CFG, **(env_config or {})}
+    env = MarketMakingEnv(merged_env_cfg)
 
     model = SAC(
         policy        = sac_cfg.policy,
@@ -258,7 +272,7 @@ def train(
         else:
             print("wandb not installed — skipping W&B logging")
 
-    eval_cfg  = {**(env_config or {}), **_EVAL_ENV_CFG}
+    eval_cfg  = {**merged_env_cfg, **_EVAL_ENV_CFG}
     callbacks = [
         QuantflowEvalCallback(
             eval_env_config = eval_cfg,

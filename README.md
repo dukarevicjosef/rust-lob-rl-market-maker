@@ -52,6 +52,26 @@ rust-lob-rl-market-maker/
 ├── scripts/
 │   ├── plot_qq.py                   # Q-Q plot visualisation (matplotlib)
 │   └── run_evaluation.sh            # End-to-end evaluation pipeline
+├── backend/                         # FastAPI application server
+│   ├── routers/
+│   │   ├── simulation.py            # WebSocket /ws/live + REST control endpoints
+│   │   ├── evaluation.py            # Strategy comparison endpoints
+│   │   └── metrics.py               # Stylized-facts endpoints
+│   └── services/
+│       └── websocket.py             # SimulationRunner → HawkesSimulator + AvellanedaStoikov
+├── dashboard/                       # Next.js 16 / Tailwind v4 Bloomberg-terminal UI
+│   └── src/
+│       ├── app/
+│       │   ├── live/page.tsx        # F1 — real-time LOB + agent monitor
+│       │   ├── arena/page.tsx       # F2 — strategy comparison (PnL, Sharpe, decomposition)
+│       │   ├── metrics/page.tsx     # F3 — stylized facts
+│       │   └── simulator/page.tsx   # F4 — Hawkes backtest explorer
+│       ├── components/
+│       │   ├── live/                # LobDepthChart, PriceChart, StatsPanel, TradeFeed, ControlBar
+│       │   ├── charts/              # PnlChart, SharpeBar, PnlDecomposition, DistributionBox
+│       │   └── terminal/            # Bloomberg-style Panel, DataCell, TopBar, FunctionKeyBar
+│       └── hooks/
+│           └── useSimulation.ts     # WebSocket hook with auto-reconnect, rolling state
 └── pyproject.toml                   # uv project; maturin build backend
 ```
 
@@ -105,6 +125,27 @@ uv run python -m quantflow.training.train --final --wandb --wandb-project quantf
 # End-to-end evaluation (compare → report → 6 plots)
 bash scripts/run_evaluation.sh runs/sac_test/best_model.zip 50
 ```
+
+### Dashboard
+
+```bash
+# Terminal 1 — FastAPI backend (port 8000)
+uv run uvicorn backend.main:app --reload
+
+# Terminal 2 — Next.js frontend (port 3000)
+cd dashboard && npm run dev
+```
+
+Open `http://localhost:3000`.  The UI runs four screens navigable via F1–F4 or mouse:
+
+| Key | Screen | Data source |
+|-----|---------|-------------|
+| F1  | Live trading monitor | `HawkesSimulator` streaming via WebSocket; AS agent places real resting orders into the Rust LOB |
+| F2  | Strategy arena | 50-episode backtest comparison: SAC, Optimized AS, Static AS, Naive symmetric |
+| F3  | Stylized facts | Return distribution, ACF, spread, intraday volume profile |
+| F4  | Simulator | Interactive Hawkes backtest explorer |
+
+**F1 architecture:** the FastAPI server runs `SimulationRunner`, which drives `HawkesSimulator` (Rust) via PyO3 at up to 10× real-time.  `AvellanedaStoikov.compute_quotes_skewed()` (Rust) computes optimal quotes with active inventory skewing; quotes are placed as real limit orders into the Rust `OrderBook`; fills are detected by exact `maker_id` matching.  The LOB depth chart, price chart, and trade feed are updated at 10 Hz over a WebSocket.
 
 ---
 
@@ -908,6 +949,11 @@ uv run pytest tests/ -v
 - [x] LOB microstructure feature engineering (7 functions, `RunningNormalizer`, `compute_all`)
 - [x] SAC training pipeline (SB3 `MultiInputPolicy`, auto entropy, W&B integration, best-model checkpointing)
 - [x] Evaluation framework: 4-strategy comparison, Parquet persistence, 6 matplotlib plots
+- [x] `InventoryMode` enum + `compute_quotes_skewed()` in `AvellanedaStoikov` — γ doubling, spread shift, suppress, dump
+- [x] `tick_size_f` config for `PyHawkesSimulator` — decimal tick size from Python
+- [x] FastAPI backend with WebSocket streaming (`/ws/live`) and REST control endpoints
+- [x] Bloomberg-terminal Next.js dashboard (F1 Live / F2 Arena / F3 Metrics / F4 Simulator)
+- [x] F1: real-time LOB depth chart, price chart, stats panel, agent fill feed — all data from Rust engine
 - [ ] Calibrate Hawkes parameters to real LOBSTER data; retrain on calibrated simulator
 - [ ] PPO comparison vs SAC
 - [ ] Multi-asset extension (correlated LOBs)

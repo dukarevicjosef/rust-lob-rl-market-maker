@@ -208,8 +208,16 @@ class SimState:
                     self.sim, mid, self.inventory, self.cash, self.t
                 )
                 kappa = _SAC_BASE_KAPPA * (1.0 + kappa_off)
-                self.strat.gamma = gamma
-                self.strat.kappa = kappa
+                # AvellanedaStoikov is a PyO3 object — attributes are not
+                # writable. Recreate with updated params instead.
+                self.strat = AvellanedaStoikov(
+                    gamma=gamma,
+                    kappa=kappa,
+                    t_end=_T_MAX,
+                    inventory_limit=_INV_LIMIT,
+                    sigma=0.01,
+                    spread_floor=_TICK_SIZE,
+                )
                 self._last_gamma     = gamma
                 self._last_kappa_off = kappa_off
 

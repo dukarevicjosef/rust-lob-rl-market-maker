@@ -43,10 +43,14 @@ export default function TradeFlowChart({
 
     if (trades.length === 0 && midHistory.length === 0) return;
 
-    // ── Price range ───────────────────────────────────────────────────────────
+    // ── Price range — only visible window to avoid Y-axis distortion ──────────
+    const WINDOW_S = 120;
+    const maxT_pre = Math.max(simTime, midHistory.length > 0 ? midHistory[midHistory.length - 1].sim_time : 0, WINDOW_S);
+    const minT_pre = maxT_pre - WINDOW_S;
+
     const prices: number[] = [];
-    for (const t of trades)     prices.push(t.price);
-    for (const m of midHistory) prices.push(m.mid);
+    for (const t of trades)     if (t.sim_time >= minT_pre) prices.push(t.price);
+    for (const m of midHistory) if (m.sim_time >= minT_pre) prices.push(m.mid);
     if (agent) { prices.push(agent.bid_quote, agent.ask_quote); }
 
     let minP = Math.min(...prices);
@@ -55,11 +59,13 @@ export default function TradeFlowChart({
     minP -= pad;
     maxP += pad;
 
-    // ── Time range — grows unboundedly as simulation runs ─────────────────────
-    const maxT = Math.max(simTime, midHistory.length > 0 ? midHistory[midHistory.length - 1].sim_time : 0, 30);
+    // ── Time range — rolling window of last WINDOW_S seconds ─────────────────
+    const WINDOW_S = 120;
+    const maxT = Math.max(simTime, midHistory.length > 0 ? midHistory[midHistory.length - 1].sim_time : 0, WINDOW_S);
+    const minT = maxT - WINDOW_S;
 
     // ── Coordinate helpers ────────────────────────────────────────────────────
-    const tx = (t: number) => PAD_L + (t / maxT) * plotW;
+    const tx = (t: number) => PAD_L + ((t - minT) / WINDOW_S) * plotW;
     const py = (p: number) => PAD_T + plotH - ((p - minP) / (maxP - minP)) * plotH;
 
     // ── Grid ──────────────────────────────────────────────────────────────────
@@ -81,11 +87,11 @@ export default function TradeFlowChart({
       ctx.fillText(p.toFixed(2), PAD_L - 4, y + 3);
     }
 
-    // Vertical (time)
-    const nV = Math.min(6, Math.floor(maxT / 30));
-    const tStep = maxT / Math.max(nV, 1);
+    // Vertical (time) — labels show absolute sim-time
+    const nV    = 6;
+    const tStep = WINDOW_S / nV;
     for (let i = 0; i <= nV; i++) {
-      const t = tStep * i;
+      const t = minT + tStep * i;
       const x = tx(t);
       ctx.beginPath();
       ctx.moveTo(x, PAD_T);

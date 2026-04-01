@@ -9,7 +9,7 @@ import TradeFeed    from "@/components/live/TradeFeed";
 import { useSimulation } from "@/hooks/useSimulation";
 
 // lazy-load the chart so it never runs on the server
-const PriceChart = dynamic(() => import("@/components/live/PriceChart"), { ssr: false });
+const TradeFlowChart = dynamic(() => import("@/components/live/TradeFlowChart"), { ssr: false });
 
 export default function LivePage() {
   const sim = useSimulation();
@@ -71,13 +71,15 @@ export default function LivePage() {
           </Panel>
         </div>
 
-        {/* ── PRICE CHART — col 2, row 1 ────────────────────────────────── */}
+        {/* ── TRADE FLOW — col 2, row 1 ─────────────────────────────────── */}
         <div className="border-b border-[#1e1e1e] overflow-hidden">
-          <Panel title="MID PRICE" subtitle={priceSubtitle} className="border-0 h-full">
+          <Panel title="TRADE FLOW" subtitle={priceSubtitle} className="border-0 h-full">
             <div className="h-full">
-              <PriceChart
-                priceHistory={sim.priceHistory}
-                tradeHistory={sim.tradeHistory}
+              <TradeFlowChart
+                trades={sim.tradeHistory}
+                midHistory={sim.midHistory}
+                agent={sim.agent}
+                simTime={sim.elapsedTime}
               />
             </div>
           </Panel>

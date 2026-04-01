@@ -51,6 +51,14 @@ export interface PricePoint {
 
 export interface TradeRecord extends Trade {
   timestamp: number;  // ms since epoch
+  sim_time:  number;  // simulation seconds (0–900)
+}
+
+export interface MidPoint {
+  sim_time: number;
+  mid:      number;
+  bid:      number;
+  ask:      number;
 }
 
 export interface SimConfig {
@@ -67,6 +75,7 @@ interface SimState {
   agent:           AgentState | null;
   priceHistory:    PricePoint[];
   tradeHistory:    TradeRecord[];
+  midHistory:      MidPoint[];
   eventsProcessed: number;
   elapsedTime:     number;
 }
@@ -79,12 +88,14 @@ const INITIAL: SimState = {
   agent:           null,
   priceHistory:    [],
   tradeHistory:    [],
+  midHistory:      [],
   eventsProcessed: 0,
   elapsedTime:     0,
 };
 
 const MAX_PRICE_PTS  = 500;
-const MAX_TRADE_PTS  = 80;
+const MAX_TRADE_PTS  = 3000;
+const MAX_MID_PTS    = 1000;
 const WS_URL         = "ws://localhost:8000/ws/live";
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
@@ -128,16 +139,24 @@ export function useSimulation() {
           const tick: TickData = JSON.parse(ev.data as string);
           if (tick.type !== "tick") return;
 
-          const now = Date.now();
+          const now     = Date.now();
+          const simTime = tick.timestamp;
           const newPt: PricePoint = {
             time: now,
             mid:  tick.mid_price,
             bid:  tick.agent.bid_quote,
             ask:  tick.agent.ask_quote,
           };
+          const newMid: MidPoint = {
+            sim_time: simTime,
+            mid:      tick.mid_price,
+            bid:      tick.agent.bid_quote,
+            ask:      tick.agent.ask_quote,
+          };
           const newTrades: TradeRecord[] = tick.trades.map((t) => ({
             ...t,
             timestamp: now,
+            sim_time:  simTime,
           }));
 
           setState((prev) => ({
@@ -145,15 +164,19 @@ export function useSimulation() {
             isRunning:       true,
             lob:             tick.lob,
             agent:           tick.agent,
-            elapsedTime:     tick.timestamp,
+            elapsedTime:     simTime,
             eventsProcessed: prev.eventsProcessed + 1,
             priceHistory: [
               ...prev.priceHistory.slice(-(MAX_PRICE_PTS - 1)),
               newPt,
             ],
+            midHistory: [
+              ...prev.midHistory.slice(-(MAX_MID_PTS - 1)),
+              newMid,
+            ],
             tradeHistory: [
+              ...prev.tradeHistory.slice(-(MAX_TRADE_PTS - newTrades.length)),
               ...newTrades,
-              ...prev.tradeHistory.slice(0, MAX_TRADE_PTS - newTrades.length),
             ],
           }));
         } catch {

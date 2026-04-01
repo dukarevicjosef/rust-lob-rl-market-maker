@@ -17,7 +17,6 @@ dependencies = [
     "polars>=1.39.3",
     "pyarrow>=23.0.1",
     "stable-baselines3>=2.7.1",
-    "streamlit>=1.55.0",
     "uvicorn[standard]>=0.42.0",
     "wandb>=0.25.1",
     "websockets>=16.0",

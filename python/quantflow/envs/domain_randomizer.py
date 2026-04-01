@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import Any
 
 import gymnasium as gym
+from gymnasium.utils.seeding import np_random as gym_np_random
 
 from quantflow.envs.market_making import MarketMakingEnv
 
@@ -68,11 +69,15 @@ class DomainRandomizer(gym.Wrapper):
 
     # ── Gymnasium interface ───────────────────────────────────────────────────
 
-    def reset(self, **kwargs: Any):
+    def reset(self, *, seed: int | None = None, options: dict | None = None, **kwargs: Any):
+        # Re-seed the wrapper's own np_random so that _sample_params() is
+        # deterministic: the same `seed` always yields the same domain params.
+        if seed is not None:
+            self.np_random, self._np_random_seed = gym_np_random(seed)
         params = self._sample_params()
         # Push params into the inner env before it resets the simulator.
         self.env.set_simulator_config(params)
-        return self.env.reset(**kwargs)
+        return self.env.reset(seed=seed, options=options, **kwargs)
 
     # ── Parameter sampling ────────────────────────────────────────────────────
 

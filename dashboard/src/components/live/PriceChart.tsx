@@ -100,7 +100,12 @@ export default function PriceChart({ priceHistory, tradeHistory }: PriceChartPro
   // Update data — append only the latest point to keep the X-axis scrolling
   useEffect(() => {
     if (!midRef.current || !bidRef.current || !askRef.current) return;
-    if (priceHistory.length === 0) return;
+    if (priceHistory.length === 0) {
+      midRef.current.setData([]);
+      bidRef.current.setData([]);
+      askRef.current.setData([]);
+      return;
+    }
 
     const len = priceHistory.length;
 
@@ -118,14 +123,7 @@ export default function PriceChart({ priceHistory, tradeHistory }: PriceChartPro
       askRef.current.update({ time: t, value: p.ask });
     }
 
-    // Always keep the latest bar visible unless the user has manually scrolled away
-    const ts = chartRef.current?.timeScale();
-    if (ts) {
-      const range = ts.getVisibleLogicalRange();
-      if (range && range.to >= len - 3) {
-        ts.scrollToRealTime();
-      }
-    }
+    chartRef.current?.timeScale().scrollToRealTime();
   }, [priceHistory]);
 
   return (

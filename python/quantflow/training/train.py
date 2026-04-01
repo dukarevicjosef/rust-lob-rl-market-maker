@@ -42,18 +42,24 @@ except ImportError:
 
 # ── Hyperparameter config ──────────────────────────────────────────────────────
 
+def _lr_schedule(progress_remaining: float) -> float:
+    """Linear decay from 3e-4 (start) to 5e-5 (end of training)."""
+    return 5e-5 + (3e-4 - 5e-5) * progress_remaining
+
+
 @dataclass
 class SACConfig:
     # Policy
     policy:        str         = "MultiInputPolicy"  # required for Dict obs
     # SAC hyperparameters
-    learning_rate: float       = 3e-4
     buffer_size:   int         = 1_000_000
     batch_size:    int         = 256
     tau:           float       = 0.005
     gamma:         float       = 0.99
     ent_coef:      str | float = "auto"              # automatic entropy tuning
     net_arch:      list[int]   = field(default_factory=lambda: [256, 256])
+    target_update_interval: int   = 2               # delayed target updates
+    max_grad_norm:          float = 0.5             # gradient clipping
     # Training duration
     total_timesteps: int = 1_000_000
     # Callback / evaluation
@@ -252,16 +258,18 @@ def train(
     env = MarketMakingEnv(merged_env_cfg)
 
     model = SAC(
-        policy        = sac_cfg.policy,
-        env           = env,
-        learning_rate = sac_cfg.learning_rate,
-        buffer_size   = sac_cfg.buffer_size,
-        batch_size    = sac_cfg.batch_size,
-        tau           = sac_cfg.tau,
-        gamma         = sac_cfg.gamma,
-        ent_coef      = sac_cfg.ent_coef,
-        policy_kwargs = {"net_arch": sac_cfg.net_arch},
-        verbose       = 1,
+        policy                  = sac_cfg.policy,
+        env                     = env,
+        learning_rate           = _lr_schedule,        # linear 3e-4 → 5e-5
+        buffer_size             = sac_cfg.buffer_size,
+        batch_size              = sac_cfg.batch_size,
+        tau                     = sac_cfg.tau,
+        gamma                   = sac_cfg.gamma,
+        ent_coef                = sac_cfg.ent_coef,
+        target_update_interval  = sac_cfg.target_update_interval,
+        max_grad_norm           = sac_cfg.max_grad_norm,
+        policy_kwargs           = {"net_arch": sac_cfg.net_arch},
+        verbose                 = 1,
         # tensorboard_log omitted — not required; W&B logs directly
     )
 

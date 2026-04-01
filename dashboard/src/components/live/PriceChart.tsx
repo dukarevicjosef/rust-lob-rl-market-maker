@@ -97,21 +97,35 @@ export default function PriceChart({ priceHistory, tradeHistory }: PriceChartPro
     };
   }, []);
 
-  // Update data
+  // Update data — append only the latest point to keep the X-axis scrolling
   useEffect(() => {
     if (!midRef.current || !bidRef.current || !askRef.current) return;
     if (priceHistory.length === 0) return;
 
-    // Build strictly-increasing integer time series
-    const midData = priceHistory.map((p, i) => ({ time: (i + 1) as UTCTimestamp, value: p.mid }));
-    const bidData = priceHistory.map((p, i) => ({ time: (i + 1) as UTCTimestamp, value: p.bid }));
-    const askData = priceHistory.map((p, i) => ({ time: (i + 1) as UTCTimestamp, value: p.ask }));
+    const len = priceHistory.length;
 
-    midRef.current.setData(midData);
-    bidRef.current.setData(bidData);
-    askRef.current.setData(askData);
+    if (len === 1) {
+      // First point: seed all three series
+      midRef.current.setData([{ time: 1 as UTCTimestamp, value: priceHistory[0].mid }]);
+      bidRef.current.setData([{ time: 1 as UTCTimestamp, value: priceHistory[0].bid }]);
+      askRef.current.setData([{ time: 1 as UTCTimestamp, value: priceHistory[0].ask }]);
+    } else {
+      // Subsequent points: update only the latest to avoid full re-render
+      const t = len as UTCTimestamp;
+      const p = priceHistory[len - 1];
+      midRef.current.update({ time: t, value: p.mid });
+      bidRef.current.update({ time: t, value: p.bid });
+      askRef.current.update({ time: t, value: p.ask });
+    }
 
-    chartRef.current?.timeScale().scrollToRealTime();
+    // Always keep the latest bar visible unless the user has manually scrolled away
+    const ts = chartRef.current?.timeScale();
+    if (ts) {
+      const range = ts.getVisibleLogicalRange();
+      if (range && range.to >= len - 3) {
+        ts.scrollToRealTime();
+      }
+    }
   }, [priceHistory]);
 
   return (

@@ -17,6 +17,7 @@ Optional env vars
 """
 from __future__ import annotations
 
+import math
 import os
 import statistics
 import time
@@ -50,9 +51,9 @@ _BASE_CFG: dict[str, Any] = {
 
 @dataclass
 class VariantSpec:
-    name:          str
+    name:           str
     reward_version: str
-    extra_cfg:     dict[str, Any] = field(default_factory=dict)
+    extra_cfg:      dict[str, Any] = field(default_factory=dict)
 
 
 VARIANTS: list[VariantSpec] = [
@@ -92,7 +93,6 @@ def _make_env(variant: VariantSpec, seed: int) -> MarketMakingEnv:
 
 
 def _train(variant: VariantSpec) -> PPO:
-    """Train a PPO agent for TRAIN_STEPS steps and return it."""
     vec_env = make_vec_env(
         lambda: _make_env(variant, TRAIN_SEED),
         n_envs=1,
@@ -117,47 +117,88 @@ def _train(variant: VariantSpec) -> PPO:
 
 @dataclass
 class EpisodeResult:
-    pnl:       float
-    fills:     int
-    max_inv:   int
-    n_steps:   int
+    pnl:              float
+    max_inv:          int
+    inv_std:          float
+    n_steps:          int
+    n_fills:          int          # total filled lots
+    sharpe:           float
+    max_drawdown:     float        # largest peak-to-trough drop in episode PnL
+    # v2-only components (0.0 for v1)
+    mean_rt_bonus:    float
+    mean_term_pen:    float
 
 
 def _evaluate_episode(model: PPO, variant: VariantSpec, seed: int) -> EpisodeResult:
-    env = _make_env(variant, seed)
+    env   = _make_env(variant, seed)
     obs, _ = env.reset(seed=seed)
-    done    = False
-    fills   = 0
-    max_inv = 0
-    n_steps = 0
+    done   = False
+
+    inv_history:  list[int]   = []
+    pnl_history:  list[float] = [0.0]
+    n_fills       = 0
+    rt_bonuses:   list[float] = []
+    term_pens:    list[float] = []
 
     while not done:
         action, _ = model.predict(obs, deterministic=True)
         obs, _reward, terminated, truncated, info = env.step(action)
-        done     = terminated or truncated
-        max_inv  = max(max_inv, abs(info["inventory"]))
-        n_steps += 1
+        done = terminated or truncated
+
+        inv  = info["inventory"]
+        pnl  = info["pnl"]
+        inv_history.append(abs(inv))
+        pnl_history.append(pnl)
+
+        comps = info.get("reward_components", {})
+        n_fills     += comps.get("round_trips", 0)
+        rt_bonuses.append(comps.get("rt_bonus", 0.0))
+        term_pens.append(comps.get("terminal_penalty", 0.0))
+
+    # Sharpe: step-to-step PnL returns
+    rets = [b - a for a, b in zip(pnl_history[:-1], pnl_history[1:])]
+    if len(rets) > 1:
+        m = statistics.mean(rets)
+        v = statistics.variance(rets)
+        sharpe = (m / math.sqrt(v)) if v > 1e-10 else 0.0
+    else:
+        sharpe = 0.0
+
+    # Max drawdown over episode PnL curve
+    peak = pnl_history[0]
+    max_dd = 0.0
+    for p in pnl_history:
+        if p > peak:
+            peak = p
+        dd = peak - p
+        if dd > max_dd:
+            max_dd = dd
+
+    inv_std = statistics.stdev(inv_history) if len(inv_history) > 1 else 0.0
 
     return EpisodeResult(
-        pnl     = float(info["pnl"]),
-        fills   = fills,
-        max_inv = max_inv,
-        n_steps = n_steps,
+        pnl           = pnl_history[-1],
+        max_inv       = max(inv_history) if inv_history else 0,
+        inv_std       = inv_std,
+        n_steps       = len(rets),
+        n_fills       = n_fills,
+        sharpe        = sharpe,
+        max_drawdown  = max_dd,
+        mean_rt_bonus = statistics.mean(rt_bonuses) if rt_bonuses else 0.0,
+        mean_term_pen = statistics.mean(term_pens)  if term_pens  else 0.0,
     )
 
 
 def _evaluate(model: PPO, variant: VariantSpec) -> list[EpisodeResult]:
     results: list[EpisodeResult] = []
     for i in range(EVAL_SEEDS):
-        seed = FIRST_EVAL_SEED + i
-        results.append(_evaluate_episode(model, variant, seed))
+        results.append(_evaluate_episode(model, variant, FIRST_EVAL_SEED + i))
     return results
 
 
 # ── Reporting ─────────────────────────────────────────────────────────────────
 
 def _stats(values: list[float]) -> tuple[float, float]:
-    """Return (mean, stdev)."""
     m = statistics.mean(values)
     s = statistics.stdev(values) if len(values) > 1 else 0.0
     return m, s
@@ -166,20 +207,16 @@ def _stats(values: list[float]) -> tuple[float, float]:
 def _print_table(
     variant_names: list[str],
     metrics: dict[str, list[list[float]]],
+    v2_only_metrics: set[str],
 ) -> None:
-    """
-    Print a formatted comparison table.
+    col_w  = 26
+    name_w = 22
 
-    metrics: {metric_name: [[values_v1], [values_v2], ...]}
-    """
-    col_w  = 24
-    name_w = 20
-
-    # Header
     header = f"{'Metric':<{name_w}}" + "".join(
         f"{'  ' + n + ' (mean±std)':<{col_w}}" for n in variant_names
     )
     sep = "─" * len(header)
+
     print()
     print(sep)
     print("  A/B Reward Comparison")
@@ -188,10 +225,14 @@ def _print_table(
     print(sep)
 
     for metric, per_variant in metrics.items():
-        row = f"{metric:<{name_w}}"
-        for values in per_variant:
-            m, s = _stats(values)
-            row += f"  {m:+.4f} ± {s:.4f}".ljust(col_w)
+        tag = "  [v2]" if metric in v2_only_metrics else ""
+        row = f"{metric + tag:<{name_w}}"
+        for i, values in enumerate(per_variant):
+            if metric in v2_only_metrics and variant_names[i] != "v2":
+                row += f"  {'—':>{col_w - 2}}"
+            else:
+                m, s = _stats(values)
+                row += f"  {m:+.4f} ± {s:.4f}".ljust(col_w)
         print(row)
 
     print(sep)
@@ -230,12 +271,12 @@ def _try_wandb_log(
 
 def main() -> None:
     print(f"Training {len(VARIANTS)} variants × {TRAIN_STEPS:,} steps each …")
-    print(f"Evaluating on {EVAL_SEEDS} episodes (seeds {FIRST_EVAL_SEED}–"
-          f"{FIRST_EVAL_SEED + EVAL_SEEDS - 1})\n")
+    print(f"Evaluating on {EVAL_SEEDS} episodes "
+          f"(seeds {FIRST_EVAL_SEED}–{FIRST_EVAL_SEED + EVAL_SEEDS - 1})\n")
 
-    trained_models: list[PPO]              = []
+    trained_models: list[PPO]                 = []
     eval_results:   list[list[EpisodeResult]] = []
-    train_times:    list[float]            = []
+    train_times:    list[float]               = []
 
     for variant in VARIANTS:
         print(f"  Training reward={variant.reward_version} …", end="", flush=True)
@@ -253,18 +294,33 @@ def main() -> None:
         eval_results.append(results)
         print(f" done")
 
-    # Collect metrics
+    # Fill rate: round_trips / n_steps (proxy; each round-trip = 1 buy + 1 sell fill)
+    fill_rates = [
+        [r.n_fills / max(r.n_steps, 1) * 100.0 for r in res]
+        for res in eval_results
+    ]
+    win_rates = [
+        [100.0 if r.pnl > 0.0 else 0.0 for r in res]
+        for res in eval_results
+    ]
+
     metrics: dict[str, list[list[float]]] = {
-        "PnL":         [[r.pnl     for r in res] for res in eval_results],
-        "Max |inv|":   [[float(r.max_inv) for r in res] for res in eval_results],
-        "Steps/ep":    [[float(r.n_steps) for r in res] for res in eval_results],
-        "Train time s":[[t]                              for t in train_times],
+        "PnL":              [[r.pnl          for r in res] for res in eval_results],
+        "Sharpe":           [[r.sharpe        for r in res] for res in eval_results],
+        "Max Drawdown":     [[r.max_drawdown  for r in res] for res in eval_results],
+        "Fill Rate (%)":    fill_rates,
+        "Inventory Std":    [[r.inv_std       for r in res] for res in eval_results],
+        "Max |inv|":        [[float(r.max_inv) for r in res] for res in eval_results],
+        "Win Rate (%)":     win_rates,
+        "Mean RT Bonus":    [[r.mean_rt_bonus for r in res] for res in eval_results],
+        "Mean Term Pen":    [[r.mean_term_pen for r in res] for res in eval_results],
+        "Train time (s)":   [[t]                            for t in train_times],
     }
 
+    v2_only: set[str] = {"Mean RT Bonus", "Mean Term Pen"}
     variant_names = [v.name for v in VARIANTS]
-    _print_table(variant_names, metrics, )
+    _print_table(variant_names, metrics, v2_only)
 
-    # Determine winner by mean PnL
     mean_pnls = [statistics.mean(m) for m in metrics["PnL"]]
     best_idx  = int(np.argmax(mean_pnls))
     print(f"  Winner by mean PnL: reward={VARIANTS[best_idx].name} "

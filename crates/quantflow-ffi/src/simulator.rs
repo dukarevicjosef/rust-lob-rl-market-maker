@@ -161,6 +161,24 @@ impl PyHawkesSimulator {
     pub fn t_max(&self) -> f64 {
         self.inner.config.t_max
     }
+
+    /// Set the initial mid-price used when the simulator is next reset.
+    pub fn set_initial_mid(&mut self, mid: f64) {
+        use quantflow_core::orderbook::types::Price;
+        self.inner.config.initial_mid = Price::from_f64(mid);
+    }
+
+    /// Set the log-normal order-size σ for the next reset onward.
+    ///
+    /// Higher σ → wider order-size distribution → greater average price impact.
+    pub fn set_lognormal_sigma(&mut self, sigma: f64) {
+        self.inner.config.lognormal_sigma = sigma.max(0.1);
+    }
+
+    /// Set the log-normal order-size μ for the next reset onward.
+    pub fn set_lognormal_mu(&mut self, mu: f64) {
+        self.inner.config.lognormal_mu = mu.max(0.0);
+    }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

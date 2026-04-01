@@ -172,6 +172,9 @@ class MarketMakingEnv(gym.Env):
                 "vol_short":           spaces.Box( 0.0, 1.0, shape=(1,), dtype=np.float32),
                 "spread_percentile":   spaces.Box( 0.0, 1.0, shape=(1,), dtype=np.float32),
                 "agent_fill_imbalance":spaces.Box(-1.0, 1.0, shape=(1,), dtype=np.float32),
+                # Regime signal: current lognormal σ scale, normalised to [0, 1].
+                # Tells the agent how volatile the current episode is.
+                "sigma_regime":        spaces.Box( 0.0, 1.0, shape=(1,), dtype=np.float32),
             })
         self.observation_space = spaces.Dict(_base_spaces)
         self.action_space = spaces.Box(
@@ -212,6 +215,10 @@ class MarketMakingEnv(gym.Env):
         self._current_spread: float = 0.0
         self._terminated:     bool  = False
 
+        # Domain randomization
+        self._pending_domain_params: dict | None = None
+        self._sigma_scale: float = 1.0   # current lognormal σ multiplier
+
         # obs v2: rolling trade-flow and mid-price buffers
         self._trade_times:        collections.deque = collections.deque(maxlen=1000)
         self._trade_sides:        collections.deque = collections.deque(maxlen=1000)
@@ -231,6 +238,23 @@ class MarketMakingEnv(gym.Env):
     ) -> tuple[dict, dict]:
         super().reset(seed=seed)
         rng_seed = seed if seed is not None else int(self.cfg["seed"])
+
+        # Apply domain randomization params before re-seeding the simulator.
+        if self._pending_domain_params:
+            p = self._pending_domain_params
+            if "initial_mid" in p:
+                mid = float(p["initial_mid"])
+                self._sim.set_initial_mid(mid)
+                self.initial_mid = mid
+                self.pnl_scale   = mid * self.inventory_limit
+            if "sigma_scale" in p:
+                self._sigma_scale = float(p["sigma_scale"])
+                self._sim.set_lognormal_sigma(1.0 * self._sigma_scale)
+            if "mu_scale" in p:
+                self._sim.set_lognormal_mu(3.0 * float(p["mu_scale"]))
+            # alpha_scale / beta_scale: require Hawkes process reconstruction;
+            # not applied at this layer. Stored for observability only.
+            self._pending_domain_params = None
 
         self._sim.reset(rng_seed)
 
@@ -503,6 +527,20 @@ class MarketMakingEnv(gym.Env):
             r = math.log(mid / self._prev_mid)
             self._mid_returns.append(r)
 
+    def set_simulator_config(self, params: dict) -> None:
+        """
+        Queue domain-randomization parameters to be applied at the next reset().
+
+        Called by DomainRandomizer before each episode.  Supported keys:
+
+        ``initial_mid``   float — initial mid-price for the next episode.
+        ``sigma_scale``   float — multiplier on lognormal order-size σ (baseline 1.0).
+        ``mu_scale``      float — multiplier on lognormal order-size μ (baseline 1.0).
+        ``alpha_scale``   float — stored but not applied (future Hawkes scaling).
+        ``beta_scale``    float — stored but not applied (future Hawkes scaling).
+        """
+        self._pending_domain_params = params if params else None
+
     def _track_market_event(self, event: dict) -> None:
         """Populate obs-v2 rolling buffers from a raw simulator event."""
         mid = self._sim.mid_price()
@@ -602,6 +640,14 @@ class MarketMakingEnv(gym.Env):
             ], dtype=np.float32)
             obs["agent_fill_imbalance"] = np.array([
                 compute_agent_fill_imbalance(self._agent_fill_history)
+            ], dtype=np.float32)
+            # Regime signal: lognormal σ scale normalised from [0.7, 1.5] → [0, 1].
+            _sigma_lo, _sigma_hi = 0.7, 1.5
+            obs["sigma_regime"] = np.array([
+                float(np.clip(
+                    (self._sigma_scale - _sigma_lo) / (_sigma_hi - _sigma_lo),
+                    0.0, 1.0,
+                ))
             ], dtype=np.float32)
 
         return obs

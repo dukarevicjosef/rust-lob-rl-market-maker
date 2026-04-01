@@ -58,7 +58,8 @@ class SACConfig:
     total_timesteps: int = 1_000_000
     # Callback / evaluation
     eval_freq:          int   = 10_000
-    n_eval_episodes:    int   = 5
+    n_eval_episodes:    int   = 20
+    eval_seed_offset:   int   = 5_000   # fixed seeds 5000–5019
     # AS baseline for delta logging
     as_baseline_gamma:        float = 0.1
     as_baseline_kappa_offset: float = 0.0
@@ -104,19 +105,21 @@ class QuantflowEvalCallback(BaseCallback):
 
     def __init__(
         self,
-        eval_env_config: dict[str, Any],
-        eval_freq:       int         = 10_000,
-        n_eval_episodes: int         = 5,
-        save_path:       Path | None = None,
-        as_gamma:        float       = 0.1,
-        as_kappa_offset: float       = 0.0,
-        use_wandb:       bool        = False,
-        verbose:         int         = 1,
+        eval_env_config:  dict[str, Any],
+        eval_freq:        int         = 10_000,
+        n_eval_episodes:  int         = 20,
+        eval_seed_offset: int         = 5_000,
+        save_path:        Path | None = None,
+        as_gamma:         float       = 0.1,
+        as_kappa_offset:  float       = 0.0,
+        use_wandb:        bool        = False,
+        verbose:          int         = 1,
     ) -> None:
         super().__init__(verbose)
         self._eval_env_cfg  = eval_env_config
         self._eval_freq     = eval_freq
         self._n_eval        = n_eval_episodes
+        self._eval_seed_offset = eval_seed_offset
         self._save_path     = Path(save_path) if save_path else None
         self._as_action     = np.array([as_gamma, as_kappa_offset], dtype=np.float32)
         self._use_wandb     = use_wandb and _WANDB_AVAILABLE
@@ -179,7 +182,7 @@ class QuantflowEvalCallback(BaseCallback):
 
         for seed in range(self._n_eval):
             env = MarketMakingEnv(self._eval_env_cfg)
-            obs, _ = env.reset(seed=1000 + seed)
+            obs, _ = env.reset(seed=self._eval_seed_offset + seed)
             raw_rewards, inv_hist = [], []
             done = False
             info: dict = {}
@@ -280,13 +283,14 @@ def train(
     eval_cfg  = {**merged_env_cfg, **_EVAL_ENV_CFG}
     callbacks = [
         QuantflowEvalCallback(
-            eval_env_config = eval_cfg,
-            eval_freq       = sac_cfg.eval_freq,
-            n_eval_episodes = sac_cfg.n_eval_episodes,
-            save_path       = run_dir,
-            as_gamma        = sac_cfg.as_baseline_gamma,
-            as_kappa_offset = sac_cfg.as_baseline_kappa_offset,
-            use_wandb       = wandb_active,
+            eval_env_config  = eval_cfg,
+            eval_freq        = sac_cfg.eval_freq,
+            n_eval_episodes  = sac_cfg.n_eval_episodes,
+            eval_seed_offset = sac_cfg.eval_seed_offset,
+            save_path        = run_dir,
+            as_gamma         = sac_cfg.as_baseline_gamma,
+            as_kappa_offset  = sac_cfg.as_baseline_kappa_offset,
+            use_wandb        = wandb_active,
         )
     ]
 

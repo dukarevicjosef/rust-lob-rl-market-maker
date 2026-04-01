@@ -31,6 +31,7 @@ from stable_baselines3 import SAC
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 
 from quantflow.envs.market_making import MarketMakingEnv
+from quantflow.training.feature_extractor import LobFeatureExtractor
 
 # W&B is optional — imported lazily
 try:
@@ -57,9 +58,8 @@ class SACConfig:
     tau:           float       = 0.005
     gamma:         float       = 0.99
     ent_coef:      str | float = "auto"              # automatic entropy tuning
-    net_arch:      list[int]   = field(default_factory=lambda: [256, 256])
+    net_arch:      list[int]   = field(default_factory=lambda: [128, 128])  # actor/critic heads after extractor
     target_update_interval: int   = 2               # delayed target updates
-    max_grad_norm:          float = 0.5             # gradient clipping
     # Training duration
     total_timesteps: int = 1_000_000
     # Callback / evaluation
@@ -267,8 +267,11 @@ def train(
         gamma                   = sac_cfg.gamma,
         ent_coef                = sac_cfg.ent_coef,
         target_update_interval  = sac_cfg.target_update_interval,
-        max_grad_norm           = sac_cfg.max_grad_norm,
-        policy_kwargs           = {"net_arch": sac_cfg.net_arch},
+        policy_kwargs           = {
+            "features_extractor_class":  LobFeatureExtractor,
+            "features_extractor_kwargs": {},
+            "net_arch":                  sac_cfg.net_arch,
+        },
         verbose                 = 1,
         # tensorboard_log omitted — not required; W&B logs directly
     )

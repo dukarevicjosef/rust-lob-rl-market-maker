@@ -96,12 +96,15 @@ const INITIAL: SimState = {
 const MAX_PRICE_PTS  = 500;
 const MAX_TRADE_PTS  = 3000;
 const MAX_MID_PTS    = 1000;
+const SESSION_RESET_THRESHOLD = 5; // seconds — if sim_time drops by this much, new session
 const WS_URL         = "ws://localhost:8000/ws/live";
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useSimulation() {
-  const wsRef  = useRef<WebSocket | null>(null);
+  const wsRef          = useRef<WebSocket | null>(null);
+  const simOffsetRef   = useRef<number>(0);   // cumulative sim-time across sessions
+  const lastSimTimeRef = useRef<number>(0);   // last received sim_time
   const [state, setState] = useState<SimState>(INITIAL);
 
   // Pending config for resume
@@ -140,7 +143,14 @@ export function useSimulation() {
           if (tick.type !== "tick") return;
 
           const now     = Date.now();
-          const simTime = tick.timestamp;
+          const rawTime = tick.timestamp;
+
+          // Detect session reset (sim_time jumps back to near 0)
+          if (rawTime < lastSimTimeRef.current - SESSION_RESET_THRESHOLD) {
+            simOffsetRef.current += lastSimTimeRef.current;
+          }
+          lastSimTimeRef.current = rawTime;
+          const simTime = simOffsetRef.current + rawTime;
           const newPt: PricePoint = {
             time: now,
             mid:  tick.mid_price,
@@ -230,6 +240,8 @@ export function useSimulation() {
   const reset = useCallback(
     (seed: number) => {
       send({ action: "reset", seed });
+      simOffsetRef.current   = 0;
+      lastSimTimeRef.current = 0;
       setState((s) => ({ ...INITIAL, isConnected: s.isConnected }));
     },
     [send],

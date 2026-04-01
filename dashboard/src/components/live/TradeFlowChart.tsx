@@ -55,8 +55,8 @@ export default function TradeFlowChart({
     minP -= pad;
     maxP += pad;
 
-    // ── Time range ────────────────────────────────────────────────────────────
-    const maxT = Math.max(simTime, 30);
+    // ── Time range — grows unboundedly as simulation runs ─────────────────────
+    const maxT = Math.max(simTime, midHistory.length > 0 ? midHistory[midHistory.length - 1].sim_time : 0, 30);
 
     // ── Coordinate helpers ────────────────────────────────────────────────────
     const tx = (t: number) => PAD_L + (t / maxT) * plotW;

@@ -7,7 +7,7 @@ import type { SimConfig } from "@/hooks/useSimulation";
 const SPEEDS = [0.5, 1, 2, 5, 10];
 const STRATEGIES = [
   { key: "as",  label: "Avellaneda-Stoikov" },
-  { key: "sac", label: "SAC Agent (stub)"   },
+  { key: "sac", label: "SAC Agent"           },
 ];
 
 interface ControlBarProps {

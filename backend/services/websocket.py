@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import WebSocket
 
 from quantflow import AvellanedaStoikov, HawkesSimulator
+from backend.services.sac_agent import SACAgent, BASE_KAPPA as _SAC_BASE_KAPPA
 
 # ── Session config ────────────────────────────────────────────────────────────
 
@@ -36,6 +37,15 @@ class SimState:
     def __init__(self, seed: int, strategy: str = "as") -> None:
         self.seed     = seed
         self.strategy = strategy
+        # Load SAC model once; reused across sessions within the same runner.
+        self._sac: SACAgent | None = None
+        if strategy == "sac":
+            try:
+                self._sac = SACAgent()
+                print("SAC model loaded.")
+            except FileNotFoundError as exc:
+                print(f"[warn] {exc} — falling back to AS strategy.")
+                self.strategy = "as"
         self._init_session(seed)
 
     def _init_session(self, seed: int) -> None:
@@ -65,6 +75,13 @@ class SimState:
         self.ask_id:     int|None = None
         self.last_quote_t: float  = -_QUOTE_INTERVAL
         self.t:          float    = 0.0
+
+        # Last quote prices used for display (set by _refresh_quotes).
+        self._last_bid_q:      float = 0.0
+        self._last_ask_q:      float = 0.0
+        # SAC-derived parameters for display.
+        self._last_gamma:      float = self.strat.gamma
+        self._last_kappa_off:  float = 0.0
 
         self._pending_trades: list[dict] = []
         self._pnl_hist:       list[float] = [0.0]
@@ -98,6 +115,12 @@ class SimState:
 
     def _process_event(self, event: dict) -> None:
         self.t = event["sim_time"]
+
+        # Keep SAC rolling mid-price buffer up to date.
+        if self._sac is not None:
+            mid = self.sim.mid_price()
+            if mid is not None:
+                self._sac.update_mid(mid)
 
         for trade in event["trades"]:
             maker = trade["maker_id"]
@@ -177,6 +200,17 @@ class SimState:
                     except Exception:
                         pass
         else:
+            if self._sac is not None:
+                # SAC agent: derive gamma and kappa dynamically each quote refresh.
+                gamma, kappa_off = self._sac.get_action(
+                    self.sim, mid, self.inventory, self.cash, self.t
+                )
+                kappa = _SAC_BASE_KAPPA * (1.0 + kappa_off)
+                self.strat.gamma = gamma
+                self.strat.kappa = kappa
+                self._last_gamma     = gamma
+                self._last_kappa_off = kappa_off
+
             (bid_p, ask_p), mode = self.strat.compute_quotes_skewed(
                 mid, self.inventory, self.t
             )
@@ -206,12 +240,14 @@ class SimState:
             if place_bid and abs(self.inventory + _QUOTE_QTY) <= _INV_LIMIT:
                 try:
                     self.bid_id = self.sim.place_limit_order("bid", bid_p, _QUOTE_QTY)
+                    self._last_bid_q = bid_p
                 except Exception:
                     pass
 
             if place_ask and abs(self.inventory - _QUOTE_QTY) <= _INV_LIMIT:
                 try:
                     self.ask_id = self.sim.place_limit_order("ask", ask_p, _QUOTE_QTY)
+                    self._last_ask_q = ask_p
                 except Exception:
                     pass
 
@@ -220,9 +256,18 @@ class SimState:
     # ── Tick assembly ─────────────────────────────────────────────────────────
 
     def _build_tick(self, mid: float) -> dict[str, Any]:
+        # Compute display quotes from the AS strategy (with current gamma/kappa,
+        # which for SAC were already updated by _refresh_quotes).
         (bid_q, ask_q), skew_m = self.strat.compute_quotes_skewed(
             mid, self.inventory, self.t
         )
+        # Prefer the actual placed prices when available (they may differ due to
+        # book-cross clamping), but fall back to formula values when no quotes placed.
+        if self._last_bid_q > 0:
+            bid_q = self._last_bid_q
+        if self._last_ask_q > 0:
+            ask_q = self._last_ask_q
+
         inv_ratio = abs(self.inventory) / _INV_LIMIT
         if inv_ratio >= 1.0:
             skew_m = "dump"
@@ -266,8 +311,8 @@ class SimState:
                 "unrealized_pnl": unrealized,
                 "bid_quote":      round(bid_q, 4),
                 "ask_quote":      round(ask_q, 4),
-                "gamma":          round(self.strat.gamma, 3),
-                "kappa_offset":   round((ask_q - bid_q) / 2, 4),
+                "gamma":          round(self._last_gamma, 3),
+                "kappa_offset":   round(self._last_kappa_off, 4),
                 "fills_total":    self.fills,
                 "sharpe":         sharpe,
                 "skew_mode":      skew_m,

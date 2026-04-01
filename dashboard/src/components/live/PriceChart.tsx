@@ -123,7 +123,7 @@ export default function PriceChart({ priceHistory, tradeHistory }: PriceChartPro
       askRef.current.update({ time: t, value: p.ask });
     }
 
-    chartRef.current?.timeScale().scrollToRealTime();
+    chartRef.current?.timeScale().scrollToPosition(0, false);
   }, [priceHistory]);
 
   return (

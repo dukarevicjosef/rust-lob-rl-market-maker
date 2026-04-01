@@ -152,12 +152,42 @@ def _seed_curves(ep_seed: int) -> dict:
 
 # ── Parquet loader ──────────────────────────────────────────────────────────
 
+# Map parquet agent names → canonical internal names
+_AGENT_NAME_MAP: dict[str, str] = {
+    "SAC":              "SAC Agent",
+    "Naive Symmetric":  "Naive Symmetric",
+    "Static AS":        "Static AS",
+    "Optimized AS":     "Optimized AS",
+}
+
+# Map parquet column names → internal names
+_COL_MAP: dict[str, str] = {
+    "final_pnl":   "pnl",
+    "agent":       "strategy",
+    "episode_id":  "seed",
+}
+
+
+def _normalize(rows: list[dict]) -> list[dict]:
+    """Rename columns and agent names to match internal schema."""
+    out = []
+    for row in rows:
+        r = {}
+        for k, v in row.items():
+            r[_COL_MAP.get(k, k)] = v
+        # Normalize agent name
+        raw_name = r.get("strategy", "")
+        r["strategy"] = _AGENT_NAME_MAP.get(raw_name, raw_name)
+        out.append(r)
+    return out
+
+
 def _load_parquet() -> list[dict] | None:
     if not RESULTS_PATH.exists():
         return None
     try:
         import polars as pl
-        return pl.read_parquet(RESULTS_PATH).to_dicts()
+        return _normalize(pl.read_parquet(RESULTS_PATH).to_dicts())
     except Exception:
         return None
 
@@ -175,18 +205,25 @@ async def get_summary() -> dict:
     rows = _load_parquet() or _all_episodes()
     strategies = []
     for name, p in _PARAMS.items():
-        ep = [r for r in rows if r.get("strategy") == name or r.get("agent") == name]
+        ep = [r for r in rows if r.get("strategy") == name]
         if not ep:
             continue
-        def col(key: str) -> list[float]:
-            return [float(e.get(key, 0)) for e in ep]
+
+        def col(key: str, *fallbacks: str) -> list[float]:
+            for k in (key, *fallbacks):
+                vals = [e.get(k) for e in ep if e.get(k) is not None]
+                if vals:
+                    return [float(v) for v in vals]
+            return [0.0] * len(ep)
+
         def mean(xs: list[float]) -> float:
             return sum(xs) / len(xs) if xs else 0.0
+
         def std(xs: list[float]) -> float:
             m = mean(xs)
             return math.sqrt(sum((x - m) ** 2 for x in xs) / len(xs)) if xs else 0.0
 
-        pnl_vals  = col("pnl") or col("total_pnl")
+        pnl_vals  = col("pnl", "final_pnl", "total_pnl")
         sh_vals   = col("sharpe")
         dd_vals   = col("max_drawdown")
         fr_vals   = col("fill_rate")

@@ -121,7 +121,7 @@ class EpisodeResult:
     max_inv:          int
     inv_std:          float
     n_steps:          int
-    n_fills:          int          # total filled lots
+    n_fills:          int          # steps where ≥1 agent fill occurred
     sharpe:           float
     max_drawdown:     float        # largest peak-to-trough drop in episode PnL
     # v2-only components (0.0 for v1)
@@ -136,9 +136,10 @@ def _evaluate_episode(model: PPO, variant: VariantSpec, seed: int) -> EpisodeRes
 
     inv_history:  list[int]   = []
     pnl_history:  list[float] = [0.0]
-    n_fills       = 0
+    n_fills       = 0          # steps where ≥1 agent fill occurred
     rt_bonuses:   list[float] = []
     term_pens:    list[float] = []
+    prev_inv      = 0
 
     while not done:
         action, _ = model.predict(obs, deterministic=True)
@@ -150,8 +151,14 @@ def _evaluate_episode(model: PPO, variant: VariantSpec, seed: int) -> EpisodeRes
         inv_history.append(abs(inv))
         pnl_history.append(pnl)
 
+        # Count fill EVENTS (not lots).
+        # A fill occurred if inventory changed (buy or sell fill) or if
+        # fill_pnl is non-zero (buy fill that was netted by a same-step sell).
+        if inv != prev_inv or info.get("fill_pnl", 0.0) != 0.0:
+            n_fills += 1
+        prev_inv = inv
+
         comps = info.get("reward_components", {})
-        n_fills     += comps.get("round_trips", 0)
         rt_bonuses.append(comps.get("rt_bonus", 0.0))
         term_pens.append(comps.get("terminal_penalty", 0.0))
 

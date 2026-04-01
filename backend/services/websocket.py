@@ -8,7 +8,8 @@ from typing import Any
 from fastapi import WebSocket
 
 from quantflow import AvellanedaStoikov, HawkesSimulator
-from backend.services.sac_agent import SACAgent, BASE_KAPPA as _SAC_BASE_KAPPA
+
+_SAC_BASE_KAPPA = 1.5   # must stay in sync with sac_agent.BASE_KAPPA
 
 # ── Session config ────────────────────────────────────────────────────────────
 
@@ -38,12 +39,13 @@ class SimState:
         self.seed     = seed
         self.strategy = strategy
         # Load SAC model once; reused across sessions within the same runner.
-        self._sac: SACAgent | None = None
+        self._sac = None
         if strategy == "sac":
             try:
+                from backend.services.sac_agent import SACAgent
                 self._sac = SACAgent()
                 print("SAC model loaded.")
-            except FileNotFoundError as exc:
+            except (ImportError, FileNotFoundError) as exc:
                 print(f"[warn] {exc} — falling back to AS strategy.")
                 self.strategy = "as"
         self._init_session(seed)

@@ -44,6 +44,13 @@ import gymnasium as gym
 from gymnasium import spaces
 
 import quantflow
+from quantflow.obs_features import (
+    compute_order_flow_imbalance,
+    compute_trade_arrival_rate,
+    compute_realized_vol,
+    compute_spread_percentile,
+    compute_agent_fill_imbalance,
+)
 
 
 # ── Default config ─────────────────────────────────────────────────────────────
@@ -81,6 +88,8 @@ _DEFAULT_CONFIG: dict[str, Any] = {
         "terminal_weight":      2.0,
         "reward_version":       "v1",
     },
+    # Observation version
+    "obs_version":        "v1",   # "v1" = 8 keys (baseline), "v2" = 14 keys (regime features)
     # Seed
     "seed":               42,
 }
@@ -131,6 +140,9 @@ class MarketMakingEnv(gym.Env):
         self.psi         = float(cfg["psi"])
         self.lambda_hard = float(cfg["lambda_hard"])
 
+        # Observation version
+        self.obs_version: str = str(cfg.get("obs_version", "v1"))
+
         # v2 reward config
         self.reward_version:      str   = rc["reward_version"]
         self._rc_phi:             float = float(rc["phi"])
@@ -142,7 +154,7 @@ class MarketMakingEnv(gym.Env):
 
         # Spaces
         lob_dim = self.lob_levels * 4
-        self.observation_space = spaces.Dict({
+        _base_spaces: dict = {
             "lob_state":         spaces.Box(-1.0, 1.0, shape=(lob_dim,),  dtype=np.float32),
             "volume_imbalance":  spaces.Box(-1.0, 1.0, shape=(1,),        dtype=np.float32),
             "spread":            spaces.Box( 0.0, 1.0, shape=(1,),        dtype=np.float32),
@@ -151,7 +163,17 @@ class MarketMakingEnv(gym.Env):
             "inventory":         spaces.Box(-1.0, 1.0, shape=(1,),        dtype=np.float32),
             "pnl":               spaces.Box(-1.0, 1.0, shape=(1,),        dtype=np.float32),
             "time_remaining":    spaces.Box( 0.0, 1.0, shape=(1,),        dtype=np.float32),
-        })
+        }
+        if self.obs_version == "v2":
+            _base_spaces.update({
+                "ofi_short":           spaces.Box(-1.0, 1.0, shape=(1,), dtype=np.float32),
+                "ofi_long":            spaces.Box(-1.0, 1.0, shape=(1,), dtype=np.float32),
+                "trade_arrival_rate":  spaces.Box( 0.0, 1.0, shape=(1,), dtype=np.float32),
+                "vol_short":           spaces.Box( 0.0, 1.0, shape=(1,), dtype=np.float32),
+                "spread_percentile":   spaces.Box( 0.0, 1.0, shape=(1,), dtype=np.float32),
+                "agent_fill_imbalance":spaces.Box(-1.0, 1.0, shape=(1,), dtype=np.float32),
+            })
+        self.observation_space = spaces.Dict(_base_spaces)
         self.action_space = spaces.Box(
             low  = np.array([0.01, -0.5], dtype=np.float32),
             high = np.array([1.00,  0.5], dtype=np.float32),
@@ -190,6 +212,15 @@ class MarketMakingEnv(gym.Env):
         self._current_spread: float = 0.0
         self._terminated:     bool  = False
 
+        # obs v2: rolling trade-flow and mid-price buffers
+        self._trade_times:        collections.deque = collections.deque(maxlen=1000)
+        self._trade_sides:        collections.deque = collections.deque(maxlen=1000)
+        self._trade_volumes:      collections.deque = collections.deque(maxlen=1000)
+        self._agent_fill_history: collections.deque = collections.deque(maxlen=20)
+        self._mid_prices_short:   collections.deque = collections.deque(maxlen=100)
+        self._mid_prices_long:    collections.deque = collections.deque(maxlen=500)
+        self._spread_history:     collections.deque = collections.deque(maxlen=200)
+
     # ── reset ──────────────────────────────────────────────────────────────────
 
     def reset(
@@ -216,6 +247,13 @@ class MarketMakingEnv(gym.Env):
         self._current_pnl    = 0.0
         self._current_spread = 0.0
         self._terminated     = False
+        self._trade_times.clear()
+        self._trade_sides.clear()
+        self._trade_volumes.clear()
+        self._agent_fill_history.clear()
+        self._mid_prices_short.clear()
+        self._mid_prices_long.clear()
+        self._spread_history.clear()
 
         mid = self._sim.mid_price()
         self._prev_mid = mid if mid is not None else self.initial_mid
@@ -269,15 +307,17 @@ class MarketMakingEnv(gym.Env):
                 break
             self._sim_time = event["sim_time"]
             self._update_mid_returns()
+            self._track_market_event(event)
             fill_pnl += self._process_fills(event["trades"])
 
         current_mid = self._sim.mid_price()
         if current_mid is None:
             current_mid = self._prev_mid
 
-        # Update spread for terminal penalty
+        # Update spread for terminal penalty and spread-percentile feature
         book = self._sim.get_book()
         self._current_spread = book.spread() or 0.01
+        self._spread_history.append(self._current_spread)
 
         # Mid-price history for trend (v2)
         self._mid_price_history.append(current_mid)
@@ -441,16 +481,20 @@ class MarketMakingEnv(gym.Env):
                 self._cash           -= price * qty
                 self._bid_id          = None
                 pnl_delta            += qty * price
-                # v2 tracking
+                # reward v2 tracking
                 self._step_buys      += qty
                 self._step_buy_value += price * qty
+                # obs v2 tracking
+                self._agent_fill_history.append((self._sim_time, 1, price))
             elif self._ask_id is not None and maker_id == self._ask_id:
                 self._inventory       -= qty
                 self._cash            += price * qty
                 self._ask_id           = None
-                # v2 tracking
+                # reward v2 tracking
                 self._step_sells      += qty
                 self._step_sell_value += price * qty
+                # obs v2 tracking
+                self._agent_fill_history.append((self._sim_time, -1, price))
         return pnl_delta
 
     def _update_mid_returns(self) -> None:
@@ -458,6 +502,20 @@ class MarketMakingEnv(gym.Env):
         if mid is not None and mid > 0.0 and self._prev_mid > 0.0:
             r = math.log(mid / self._prev_mid)
             self._mid_returns.append(r)
+
+    def _track_market_event(self, event: dict) -> None:
+        """Populate obs-v2 rolling buffers from a raw simulator event."""
+        mid = self._sim.mid_price()
+        if mid is not None and mid > 0.0:
+            self._mid_prices_short.append(mid)
+            self._mid_prices_long.append(mid)
+
+        # Even event_type = buy-side pressure; odd = sell-side (Hawkes convention).
+        side_sign = 1 if event["event_type"] % 2 == 0 else -1
+        for trade in event["trades"]:
+            self._trade_times.append(event["sim_time"])
+            self._trade_sides.append(side_sign)
+            self._trade_volumes.append(int(trade["qty"]))
 
     def _realized_vol(self) -> float:
         if len(self._mid_returns) < 2:
@@ -507,7 +565,7 @@ class MarketMakingEnv(gym.Env):
         pnl_norm    = float(np.clip(current_pnl / (self.pnl_scale + 1e-9), -1.0, 1.0))
         t_rem       = float(np.clip(1.0 - self._sim_time / (self.t_max + 1e-9), 0.0, 1.0))
 
-        return {
+        obs = {
             "lob_state":        lob_state,
             "volume_imbalance": np.array([vol_imbalance], dtype=np.float32),
             "spread":           np.array([spread_norm],   dtype=np.float32),
@@ -517,6 +575,36 @@ class MarketMakingEnv(gym.Env):
             "pnl":              np.array([pnl_norm],      dtype=np.float32),
             "time_remaining":   np.array([t_rem],         dtype=np.float32),
         }
+
+        if self.obs_version == "v2":
+            obs["ofi_short"] = np.array([
+                compute_order_flow_imbalance(
+                    self._trade_sides, self._trade_volumes, window=50
+                )
+            ], dtype=np.float32)
+            obs["ofi_long"] = np.array([
+                compute_order_flow_imbalance(
+                    self._trade_sides, self._trade_volumes, window=300
+                )
+            ], dtype=np.float32)
+            obs["trade_arrival_rate"] = np.array([
+                compute_trade_arrival_rate(
+                    self._trade_times, self._sim_time, window_sec=10.0
+                )
+            ], dtype=np.float32)
+            obs["vol_short"] = np.array([
+                compute_realized_vol(self._mid_prices_short, window=50)
+            ], dtype=np.float32)
+            obs["spread_percentile"] = np.array([
+                compute_spread_percentile(
+                    spread_raw or 0.0, self._spread_history
+                )
+            ], dtype=np.float32)
+            obs["agent_fill_imbalance"] = np.array([
+                compute_agent_fill_imbalance(self._agent_fill_history)
+            ], dtype=np.float32)
+
+        return obs
 
 
 # ── Registration ───────────────────────────────────────────────────────────────

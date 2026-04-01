@@ -43,6 +43,35 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
+
+# ── Reward normalization ───────────────────────────────────────────────────────
+
+class RewardNormalizer:
+    """
+    Online mean/std normalization via Welford's algorithm.
+
+    Accumulates statistics across the entire training run (not reset per
+    episode) so the normalizer converges as more reward samples arrive.
+    Normalized output is clipped to ``[-clip, +clip]``.
+    """
+
+    def __init__(self, clip: float = 10.0) -> None:
+        self.mean:  float = 0.0
+        self.var:   float = 1.0
+        self.count: int   = 0
+        self.clip:  float = clip
+
+    def normalize(self, reward: float) -> float:
+        self.count += 1
+        delta        = reward - self.mean
+        self.mean   += delta / self.count
+        delta2       = reward - self.mean
+        self.var    += (delta * delta2 - self.var) / self.count
+
+        std        = max(math.sqrt(self.var), 1e-8)
+        normalized = (reward - self.mean) / std
+        return float(np.clip(normalized, -self.clip, self.clip))
+
 import quantflow
 from quantflow.obs_features import (
     compute_order_flow_imbalance,
@@ -90,6 +119,9 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     },
     # Observation version
     "obs_version":        "v1",   # "v1" = 8 keys (baseline), "v2" = 14 keys (regime features)
+    # Reward normalization
+    "normalize_reward":   True,   # Welford online normalization; set False for eval
+    "reward_clip":        10.0,   # clip range for normalized reward
     # Seed
     "seed":               42,
 }
@@ -218,6 +250,12 @@ class MarketMakingEnv(gym.Env):
         # Domain randomization
         self._pending_domain_params: dict | None = None
         self._sigma_scale: float = 1.0   # current lognormal σ multiplier
+
+        # Reward normalization (persists across episodes — intentional)
+        self._normalize_reward: bool = bool(cfg.get("normalize_reward", True))
+        self._reward_normalizer: RewardNormalizer = RewardNormalizer(
+            clip=float(cfg.get("reward_clip", 10.0))
+        )
 
         # obs v2: rolling trade-flow and mid-price buffers
         self._trade_times:        collections.deque = collections.deque(maxlen=1000)
@@ -355,9 +393,14 @@ class MarketMakingEnv(gym.Env):
 
         # Dispatch reward
         if self.reward_version == "v2":
-            reward, components = self._compute_reward_v2()
+            raw_reward, components = self._compute_reward_v2()
         else:
-            reward, components = self._compute_reward_v1(pnl)
+            raw_reward, components = self._compute_reward_v1(pnl)
+
+        if self._normalize_reward:
+            reward = self._reward_normalizer.normalize(raw_reward)
+        else:
+            reward = raw_reward
 
         self._prev_pnl  = pnl
         self._prev_mid  = current_mid
@@ -369,6 +412,7 @@ class MarketMakingEnv(gym.Env):
             "sim_time":   self._sim_time,
             "fill_pnl":   fill_pnl,
             "mid":        current_mid,
+            "raw_reward": raw_reward,
             "reward_components": components,
         }
         return obs, float(reward), terminated, False, info

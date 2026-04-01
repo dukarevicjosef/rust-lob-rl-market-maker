@@ -77,11 +77,14 @@ _DEFAULT_ENV_CFG: dict[str, Any] = {
     },
 }
 
-# Shorter episode config used inside callbacks to keep evaluation fast
+# Shorter episode config used inside callbacks to keep evaluation fast.
+# normalize_reward=False so eval metrics reflect true economic values,
+# not the normalized signal seen by the agent during training.
 _EVAL_ENV_CFG: dict[str, Any] = {
-    "episode_length":  500,
-    "events_per_step": 50,
-    "warm_up_events":  500,
+    "episode_length":   500,
+    "events_per_step":  50,
+    "warm_up_events":   500,
+    "normalize_reward": False,
 }
 
 
@@ -177,17 +180,19 @@ class QuantflowEvalCallback(BaseCallback):
         for seed in range(self._n_eval):
             env = MarketMakingEnv(self._eval_env_cfg)
             obs, _ = env.reset(seed=1000 + seed)
-            step_rewards, inv_hist = [], []
+            raw_rewards, inv_hist = [], []
             done = False
             info: dict = {}
 
             while not done:
-                obs, rew, term, trunc, info = env.step(policy_fn(obs))
-                step_rewards.append(float(rew))
+                obs, _rew, term, trunc, info = env.step(policy_fn(obs))
+                # Use raw_reward for all eval metrics — normalize_reward=False
+                # in eval env so raw_reward == rew, but explicit for safety.
+                raw_rewards.append(float(info.get("raw_reward", _rew)))
                 inv_hist.append(int(info["inventory"]))
                 done = term or trunc
 
-            arr = np.array(step_rewards)
+            arr = np.array(raw_rewards)
             n   = len(arr)
             rewards.append(float(arr.sum()))
             pnls.append(float(info["pnl"]))

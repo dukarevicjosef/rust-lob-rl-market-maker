@@ -137,7 +137,6 @@ def _train(variant: VariantSpec) -> PPO:
 class EpisodeResult:
     pnl:    float
     sharpe: float
-    win:    bool    # pnl > 0
 
 
 def _evaluate_episode(
@@ -170,7 +169,6 @@ def _evaluate_episode(
     return EpisodeResult(
         pnl    = pnl_history[-1],
         sharpe = sharpe,
-        win    = pnl_history[-1] > 0.0,
     )
 
 
@@ -216,9 +214,9 @@ def _print_report(
         print(f"\n{label.upper()} REGIME ({n} episodes)")
 
         for metric_name, extractor in [
-            ("PnL",      lambda r: r.pnl),
-            ("Sharpe",   lambda r: r.sharpe),
-            ("Win Rate", lambda r: 100.0 * float(r.win)),
+            ("PnL",             lambda r: r.pnl),
+            ("Sharpe",          lambda r: r.sharpe),
+            ("Pos. Sharpe (%)", lambda r: 100.0 * float(r.sharpe > 0.0)),
         ]:
             row = f"  {metric_name:<{name_w - 2}}"
             for vi, results in enumerate(per_variant):
@@ -265,10 +263,10 @@ def _try_wandb_log(
         for name, results in zip(variant_names, per_variant):
             pnls   = [r.pnl    for r in results]
             sharps = [r.sharpe for r in results]
-            summary[f"{name}/{regime_key}/pnl_mean"]    = statistics.mean(pnls)
-            summary[f"{name}/{regime_key}/sharpe_mean"] = statistics.mean(sharps)
-            summary[f"{name}/{regime_key}/win_rate"]    = statistics.mean(
-                [100.0 * r.win for r in results]
+            summary[f"{name}/{regime_key}/pnl_mean"]       = statistics.mean(pnls)
+            summary[f"{name}/{regime_key}/sharpe_mean"]    = statistics.mean(sharps)
+            summary[f"{name}/{regime_key}/pos_sharpe_pct"] = statistics.mean(
+                [100.0 * float(r.sharpe > 0.0) for r in results]
             )
     for name, rob in zip(variant_names, robustness):
         summary[f"{name}/robustness_score"] = statistics.mean(rob) if rob else 0.0

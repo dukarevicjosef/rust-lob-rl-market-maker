@@ -306,8 +306,8 @@ def main() -> None:
         [r.n_fills / max(r.n_steps, 1) * 100.0 for r in res]
         for res in eval_results
     ]
-    win_rates = [
-        [100.0 if r.pnl > 0.0 else 0.0 for r in res]
+    pos_sharpe_rates = [
+        [100.0 if r.sharpe > 0.0 else 0.0 for r in res]
         for res in eval_results
     ]
 
@@ -318,7 +318,7 @@ def main() -> None:
         "Fill Rate (%)":    fill_rates,
         "Inventory Std":    [[r.inv_std       for r in res] for res in eval_results],
         "Max |inv|":        [[float(r.max_inv) for r in res] for res in eval_results],
-        "Win Rate (%)":     win_rates,
+        "Pos. Sharpe (%)":  pos_sharpe_rates,
         "Mean RT Bonus":    [[r.mean_rt_bonus for r in res] for res in eval_results],
         "Mean Term Pen":    [[r.mean_term_pen for r in res] for res in eval_results],
         "Train time (s)":   [[t]                            for t in train_times],

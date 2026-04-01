@@ -1,3 +1,3 @@
 pub mod avellaneda;
 
-pub use avellaneda::{AvellanedaStoikov, BacktestResult};
+pub use avellaneda::{AvellanedaStoikov, BacktestResult, InventoryMode};

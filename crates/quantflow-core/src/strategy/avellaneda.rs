@@ -9,6 +9,32 @@ use crate::orderbook::order::Trade;
 use crate::orderbook::types::{OrderId, Price, Quantity, Side};
 use crate::simulator::HawkesLobSimulator;
 
+// ── Inventory regime ─────────────────────────────────────────────────────────
+
+/// Describes which inventory-management regime is active for a given quote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InventoryMode {
+    /// Normal quoting — no skewing applied.
+    Normal,
+    /// |q|/limit ∈ [0.70, 0.90): doubled γ + directional spread shift.
+    Skew,
+    /// |q|/limit ∈ [0.90, 1.00): Skew + inventory-building side suppressed.
+    Suppress,
+    /// |q|/limit = 1.00: caller must issue an aggressive dump order.
+    Dump,
+}
+
+impl InventoryMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            InventoryMode::Normal   => "normal",
+            InventoryMode::Skew     => "skew",
+            InventoryMode::Suppress => "suppress",
+            InventoryMode::Dump     => "dump",
+        }
+    }
+}
+
 // ── Strategy ──────────────────────────────────────────────────────────────────
 
 /// Avellaneda-Stoikov market-making strategy.
@@ -94,6 +120,71 @@ impl AvellanedaStoikov {
         let half_spread = (inventory_term + liquidity_term).max(self.spread_floor);
 
         (r - half_spread, r + half_spread)
+    }
+
+    /// AS quotes with active inventory skewing.
+    ///
+    /// Three regimes above the base quote:
+    /// - `|q|/limit ∈ [0.70, 0.90)`: double γ_eff + directional spread shift.
+    /// - `|q|/limit ∈ [0.90, 1.00)`: also suppress the inventory-building side
+    ///   by pushing that quote 10 ticks through mid (will not fill passively).
+    /// - `|q|/limit = 1.00`: caller should issue an aggressive dump order;
+    ///   this function returns `InventoryMode::Dump` as a signal.
+    pub fn compute_quotes_skewed(
+        &self,
+        mid: f64,
+        inventory: i64,
+        t: f64,
+    ) -> ((f64, f64), InventoryMode) {
+        let limit   = self.inventory_limit as f64;
+        let q       = inventory as f64;
+        let ratio   = (q.abs() / limit).min(1.0);
+        let sigma   = self.sigma;
+
+        if ratio >= 1.0 {
+            // Quoting is suspended — caller issues a dump order instead.
+            let (b, a) = self.quotes_with_sigma(mid, inventory, t, sigma);
+            return ((b, a), InventoryMode::Dump);
+        }
+
+        // Effective risk aversion: doubled above 70%.
+        let gamma_eff = if ratio >= 0.70 { self.gamma * 2.0 } else { self.gamma };
+        let tau       = (self.t_end - t).max(1e-6);
+
+        // Reservation price with gamma_eff (Avellaneda & Stoikov 2008, Eq. 7).
+        let r = mid - q * gamma_eff * sigma.powi(2) * tau;
+
+        // Half-spread with gamma_eff.
+        let inv_term  = 0.5  * gamma_eff * sigma.powi(2) * tau;
+        let liq_term  = (1.0 / gamma_eff) * (1.0 + gamma_eff / self.kappa).ln();
+        let base_half = (inv_term + liq_term).max(self.spread_floor);
+
+        // Directional skew: extra offset pushes both quotes toward unwinding side.
+        let extra = if ratio >= 0.70 {
+            q.signum() * (ratio - 0.70) * base_half * 2.0
+        } else {
+            0.0
+        };
+
+        let mut bid_q = r - base_half - extra;
+        let mut ask_q = r + base_half - extra;
+
+        // Suppress: push inventory-building quote 10 ticks through mid.
+        let mode = if ratio >= 0.90 {
+            let far = 0.10; // 10 × 0.01 tick in native price units
+            if inventory > 0 {
+                bid_q = mid - far;
+            } else {
+                ask_q = mid + far;
+            }
+            InventoryMode::Suppress
+        } else if ratio >= 0.70 {
+            InventoryMode::Skew
+        } else {
+            InventoryMode::Normal
+        };
+
+        ((bid_q, ask_q), mode)
     }
 
     // ── Parameter estimation ──────────────────────────────────────────────────

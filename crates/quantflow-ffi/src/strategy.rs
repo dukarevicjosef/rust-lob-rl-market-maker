@@ -102,6 +102,23 @@ impl PyAvellanedaStoikov {
     #[getter]
     pub fn t_end(&self) -> f64 { self.inner.t_end }
 
+    /// Compute quotes with active inventory skewing.
+    ///
+    /// Returns ``((bid, ask), mode)`` where mode is one of:
+    /// ``"normal"``, ``"skew"``, ``"suppress"``, ``"dump"``.
+    ///
+    /// When mode is ``"dump"`` the caller should place an aggressive order
+    /// through mid instead of resting at the returned quotes.
+    pub fn compute_quotes_skewed(
+        &self,
+        mid: f64,
+        inventory: i64,
+        t: f64,
+    ) -> ((f64, f64), &'static str) {
+        let (quotes, mode) = self.inner.compute_quotes_skewed(mid, inventory, t);
+        (quotes, mode.as_str())
+    }
+
     pub fn __repr__(&self) -> String {
         format!(
             "AvellanedaStoikov(gamma={:.4}, kappa={:.4}, t_end={:.1}, sigma_auto={}, spread_floor={:.4})",

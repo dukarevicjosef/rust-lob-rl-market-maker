@@ -56,6 +56,13 @@ impl PyHawkesSimulator {
                 use quantflow_core::orderbook::types::Price;
                 sim.config.initial_mid = Price::from_f64(v.extract::<f64>()?);
             }
+            // tick_size_f: tick size in native price units (e.g. 0.01 for a cent tick).
+            // Converts to fixed-point: stored as round(tick_f * PRICE_SCALE).
+            if let Ok(Some(v)) = cfg.get_item("tick_size_f") {
+                use quantflow_core::orderbook::types::PRICE_SCALE;
+                let tick_f = v.extract::<f64>()?;
+                sim.config.tick_size = (tick_f * PRICE_SCALE as f64).round() as i64;
+            }
         }
 
         Ok(PyHawkesSimulator { inner: sim })

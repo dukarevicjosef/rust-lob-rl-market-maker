@@ -36,9 +36,14 @@ rust-lob-rl-market-maker/
 ├── python/
 │   └── quantflow/
 │       ├── envs/
-│       │   └── market_making.py     # MarketMakingEnv (gymnasium.Env)
+│       │   ├── market_making.py     # MarketMakingEnv (gymnasium.Env) + RewardNormalizer
+│       │   ├── obs_features.py      # Obs v2: OFI, trade rate, vol, spread pctile, fill imbalance
+│       │   ├── domain_randomizer.py # DomainRandomizer wrapper — Hawkes param perturbation
+│       │   └── curriculum.py        # CurriculumWrapper + CurriculumCallback (3-stage)
 │       ├── training/
 │       │   ├── train.py             # SAC training loop + callbacks
+│       │   ├── feature_extractor.py # LobFeatureExtractor — 1D-CNN + scalar MLP for SB3
+│       │   ├── ab_curriculum.py     # A/B: no-curriculum vs CurriculumWrapper
 │       │   └── evaluate.py          # Quick policy evaluation helper
 │       ├── evaluation/
 │       │   ├── compare.py           # 4-strategy comparison → Parquet
@@ -48,7 +53,9 @@ rust-lob-rl-market-maker/
 ├── tests/
 │   ├── test_ffi.py                  # 27 PyO3 binding tests
 │   ├── test_env.py                  # 18 Gymnasium env tests
-│   └── test_features.py             # 49 feature + RunningNormalizer tests
+│   ├── test_features.py             # 49 feature + RunningNormalizer tests
+│   ├── test_domain_randomizer.py    # DomainRandomizer tests
+│   └── test_curriculum.py           # 13 CurriculumWrapper + CurriculumCallback tests
 ├── scripts/
 │   ├── plot_qq.py                   # Q-Q plot visualisation (matplotlib)
 │   └── run_evaluation.sh            # End-to-end evaluation pipeline
@@ -67,7 +74,7 @@ rust-lob-rl-market-maker/
 │       │   ├── metrics/page.tsx     # F3 — stylized facts
 │       │   └── simulator/page.tsx   # F4 — Hawkes backtest explorer
 │       ├── components/
-│       │   ├── live/                # LobDepthChart, PriceChart, StatsPanel, TradeFeed, ControlBar
+│       │   ├── live/                # LobDepthChart, TradeFlowChart, StatsPanel, TradeFeed, ControlBar
 │       │   ├── charts/              # PnlChart, SharpeBar, PnlDecomposition, DistributionBox
 │       │   └── terminal/            # Bloomberg-style Panel, DataCell, TopBar, FunctionKeyBar
 │       └── hooks/
@@ -685,6 +692,8 @@ while (event := sim.step()) is not None:
 
 ### Observation space (`gymnasium.spaces.Dict`)
 
+**v1 — base features (8 keys, always present)**
+
 | Key | Shape | Range | Description |
 |---|---|---|---|
 | `lob_state` | (20,) | [−1, 1] | 5 bid + 5 ask levels; each: (Δprice/mid, qty/max_qty_scale) |
@@ -696,6 +705,17 @@ while (event := sim.step()) is not None:
 | `pnl` | (1,) | [−1, 1] | Mark-to-market PnL / (initial_mid × inventory_limit) |
 | `time_remaining` | (1,) | [0, 1] | 1 − t / T |
 
+**v2 — additional regime-detection features (`obs_version="v2"`, 6 extra keys)**
+
+| Key | Shape | Description |
+|---|---|---|
+| `ofi_short` | (1,) | Order-flow imbalance, 10-event rolling window |
+| `ofi_long` | (1,) | Order-flow imbalance, 50-event rolling window |
+| `trade_arrival_rate` | (1,) | Trades per second (last 30 events), normalised |
+| `realized_vol` | (1,) | 20-event realised volatility (quadratic variation) |
+| `spread_percentile` | (1,) | Rolling spread percentile vs last 200 observations |
+| `agent_fill_imbalance` | (1,) | (bid_fills − ask_fills) / (total_fills + ε) |
+
 ### Action space (`Box(2,)`)
 
 | Index | Parameter | Range | Effect |
@@ -705,11 +725,24 @@ while (event := sim.step()) is not None:
 
 ### Reward
 
+**v1 (default)**
+
 ```
 R = ΔPnL  −  φ·|q|  −  ψ·q²  −  λ·max(0, |q|−K)
 ```
 
-Linear and quadratic inventory penalties (φ, ψ) encourage active hedging; the hard-breach term (λ) penalises exceeding `inventory_limit` K.
+**v2 (`reward_version="v2"`)** — adds round-trip bonus, asymmetric inventory shaping, and terminal penalty:
+
+```
+R = ΔPnL  −  φ·|q|  −  ψ·q²  −  λ·max(0, |q|−K)
+      +  rt_weight · round_trip_pnl          # bonus per completed round trip
+      +  asymmetric_strength · q · ΔPnL      # extra penalty when inventory grows against PnL
+      −  terminal_weight · q² / K²  (final step only)
+```
+
+Default v2 parameters: `phi=0.01, psi=0.001, lambda_breach=1.0, rt_weight=0.5, asymmetric_strength=0.3, terminal_weight=2.0`.
+
+**Online reward normalisation** — enabled by default (`normalize_reward=True`). Uses Welford's one-pass algorithm to track running mean/variance across all steps (not reset between episodes). Rewards are clipped to ±10σ before normalisation. Set `normalize_reward=False` in eval environments to observe raw economic values.
 
 ### Fill detection
 
@@ -777,29 +810,57 @@ Trains a Soft Actor-Critic agent with `MultiInputPolicy` (required for Dict obse
 from quantflow.training.train import SACConfig
 
 cfg = SACConfig(
-    policy         = "MultiInputPolicy",   # Dict obs → CombinedExtractor + MLP
-    learning_rate  = 3e-4,
-    buffer_size    = 1_000_000,
-    batch_size     = 256,
-    tau            = 0.005,
-    gamma          = 0.99,
-    ent_coef       = "auto",               # automatic entropy tuning
-    net_arch       = [256, 256],
-    total_timesteps = 1_000_000,           # 2M for final run
+    policy                  = "MultiInputPolicy",  # Dict obs → LobFeatureExtractor + MLP
+    buffer_size             = 1_000_000,
+    batch_size              = 256,
+    tau                     = 0.005,
+    gamma                   = 0.99,
+    ent_coef                = "auto",              # automatic entropy tuning
+    net_arch                = [128, 128],          # actor/critic heads after extractor
+    target_update_interval  = 2,                   # delayed target updates for critic stability
+    total_timesteps         = 1_000_000,           # 2M for final run (--final flag)
+    eval_freq               = 10_000,
+    n_eval_episodes         = 20,                  # fixed seeds 5000–5019
 )
 ```
 
+**Learning rate** decays linearly from 3×10⁻⁴ → 5×10⁻⁵ over training (schedule passed directly to SB3).
+
+### LobFeatureExtractor
+
+A custom `BaseFeaturesExtractor` that replaces SB3's default `CombinedExtractor`. Placed in `python/quantflow/training/feature_extractor.py`.
+
+```
+lob_state (20,)
+  → reshape (batch, 10 levels, 2)   [Δprice, qty per level]
+  → permute (batch, 2 channels, 10) for Conv1d
+  → Conv1d(2→16, k=3) → ReLU       → (batch, 16, 8)
+  → Conv1d(16→32, k=3) → ReLU      → (batch, 32, 6)
+  → Flatten                         → (batch, 192)
+
+scalar keys (all other obs, sorted, concatenated)
+  → Linear(N→64) → ReLU            → (batch, 64)
+
+combined
+  → cat([192, 64])                  → (batch, 256)
+  → Linear(256→128) → ReLU         → (batch, 128)  ← features_dim
+```
+
+The CNN learns spatial patterns across price levels (liquidity gaps, volume clusters). Compatible with both `obs_version="v1"` (7 scalar keys) and `obs_version="v2"` (13 scalar keys) — scalar dimension is inferred dynamically.
+
 ### QuantflowEvalCallback
 
-Fires every `eval_freq` steps (default 10k). Runs `n_eval_episodes` (default 5) episodes with the current deterministic policy **and** a static AS baseline with the same env. Logs to SB3's stdout logger and optionally to W&B via direct `wandb.log()` — no TensorBoard dependency.
+Fires every `eval_freq` steps (default 10k). Runs `n_eval_episodes` (default 20) episodes with fixed seeds `5000–5019` using the current deterministic policy **and** a static AS baseline with the same env. Eval episodes use `normalize_reward=False` so metrics reflect raw economic values. Logs to SB3's stdout logger and optionally to W&B via direct `wandb.log()` — no TensorBoard dependency.
 
 | Logged key | Description |
 |---|---|
-| `eval/mean_reward` | Mean cumulative episode reward |
+| `eval/mean_reward` | Mean cumulative episode reward (raw) |
 | `eval/mean_pnl` | Mean mark-to-market PnL at episode end |
 | `eval/mean_sharpe` | Per-episode Sharpe: mean(r) / std(r) · √n |
 | `eval/mean_inventory_std` | Mean inventory standard deviation |
-| `baseline/mean_pnl` | Same metrics for static AS (γ=0.1) |
+| `baseline/mean_reward` | Same metrics for static AS (γ=0.1) |
+| `baseline/mean_pnl` | AS baseline PnL |
+| `baseline/mean_sharpe` | AS baseline Sharpe |
 | `delta/pnl` | SAC − AS baseline PnL |
 | `delta/sharpe` | SAC − AS baseline Sharpe |
 
@@ -818,7 +879,57 @@ uv run python -m quantflow.training.train \
 
 ---
 
-## 12. Evaluation Framework (`python/quantflow/evaluation/`)
+## 12. Domain Randomization & Curriculum Learning
+
+### Domain Randomization (`python/quantflow/envs/domain_randomizer.py`)
+
+`DomainRandomizer` wraps any `gymnasium.Env` and randomly perturbs Hawkes simulator parameters at each episode reset. This prevents the agent from over-fitting to a single market regime.
+
+| Parameter | Perturbation |
+|---|---|
+| `mu` (baseline intensities) | ×U(0.7, 1.3) per process |
+| `alpha` (excitation matrix) | ×U(0.8, 1.2) per entry |
+| `beta` (decay rates) | ×U(0.85, 1.15) |
+| `tick_size` | sampled from {0.01, 0.02, 0.05} |
+
+Parameters are clamped to maintain Hawkes stability (spectral radius < 1).
+
+```python
+from quantflow.envs.domain_randomizer import DomainRandomizer
+from quantflow.envs.market_making import MarketMakingEnv
+
+env = DomainRandomizer(MarketMakingEnv(), perturbation_scale=0.2)
+```
+
+### Curriculum Learning (`python/quantflow/envs/curriculum.py`)
+
+`CurriculumWrapper` exposes three difficulty stages that progressively increase market complexity. `CurriculumCallback` auto-advances the stage when a rolling reward threshold is met.
+
+| Stage | `episode_length` | `events_per_step` | `inventory_limit` | Advance threshold |
+|---|---|---|---|---|
+| `easy` | 250 | 25 | 5 | mean reward > −0.5 over 10 eval episodes |
+| `medium` | 500 | 50 | 10 | mean reward > −0.2 |
+| `hard` | 1000 | 100 | 20 | — (terminal stage) |
+
+```python
+from quantflow.envs.curriculum import CurriculumWrapper, CurriculumCallback
+from quantflow.envs.market_making import MarketMakingEnv
+
+env = CurriculumWrapper(MarketMakingEnv(), auto_advance=True)
+callback = CurriculumCallback(env, eval_freq=5_000)
+```
+
+### A/B Comparison (`python/quantflow/training/ab_curriculum.py`)
+
+Runs a controlled experiment: no-curriculum (hard env from start) vs `CurriculumWrapper`. Both conditions train for the same total timesteps. Three evaluation regimes (STANDARD, HIGH-VOL, LOW-LIQ) measure robustness via mean Sharpe across regimes.
+
+```bash
+uv run python -m quantflow.training.ab_curriculum --timesteps 200000
+```
+
+---
+
+## 13. Evaluation Framework (`python/quantflow/evaluation/`)
 
 Three-stage pipeline comparing SAC against three fixed-action baselines.
 
@@ -903,13 +1014,15 @@ uv run pytest tests/ -v
 | `strategy::avellaneda` | 25 | Quote formulas, σ auto-cal, spread floor, PnL decomposition, adverse selection, backtest fill/inventory/drawdown |
 | Integration | 7 | End-to-end LOBSTER replay, final book state |
 
-**Python (94 tests)**
+**Python (120 tests)**
 
 | Module | Tests | Coverage |
 |---|---|---|
 | `tests/test_ffi.py` | 27 | PyOrderBook (empty, insert, cross, cancel, snapshot), PyHawkesSimulator (create, reset, step, day), PyAvellanedaStoikov (construction, quotes, repr) |
 | `tests/test_env.py` | 18 | Gymnasium compliance, observation/action spaces, reset contract, fills, inventory bounds, termination, `gym.make` |
 | `tests/test_features.py` | 49 | All 7 feature functions (edge cases, window clipping, tick rule), `compute_all`, `RunningNormalizer` (Welford convergence, serialisation, constant-feature stability) |
+| `tests/test_domain_randomizer.py` | 13 | Parameter perturbation, stability clamping, seed reproducibility, obs-space passthrough |
+| `tests/test_curriculum.py` | 13 | Initial stage, auto-advance easy→medium→hard, no advance beyond hard, info keys, `set_stage`, reward clamping, `auto_advance=False` |
 
 ---
 
@@ -953,7 +1066,14 @@ uv run pytest tests/ -v
 - [x] `tick_size_f` config for `PyHawkesSimulator` — decimal tick size from Python
 - [x] FastAPI backend with WebSocket streaming (`/ws/live`) and REST control endpoints
 - [x] Bloomberg-terminal Next.js dashboard (F1 Live / F2 Arena / F3 Metrics / F4 Simulator)
-- [x] F1: real-time LOB depth chart, price chart, stats panel, agent fill feed — all data from Rust engine
+- [x] F1: real-time LOB depth chart, trade-flow scatter, stats panel, agent fill feed — all data from Rust engine
+- [x] Reward v2: round-trip bonus, asymmetric inventory shaping, terminal penalty
+- [x] Obs v2: 6 regime-detection features (OFI short/long, trade arrival rate, realised vol, spread percentile, fill imbalance)
+- [x] Online reward normalisation (Welford's algorithm, persists across episodes, eval bypass)
+- [x] LobFeatureExtractor: 1D-CNN over LOB depth + scalar MLP, replaces SB3 CombinedExtractor
+- [x] SAC training hardening: linear LR decay 3e-4 → 5e-5, delayed target updates, 20 eval episodes with fixed seeds
+- [x] Domain Randomization: Hawkes param perturbation at episode reset, stability clamping
+- [x] Curriculum Learning: 3-stage easy/medium/hard, auto-advance on rolling reward threshold
 - [ ] Calibrate Hawkes parameters to real LOBSTER data; retrain on calibrated simulator
 - [ ] PPO comparison vs SAC
 - [ ] Multi-asset extension (correlated LOBs)

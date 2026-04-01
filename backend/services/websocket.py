@@ -99,12 +99,16 @@ class SimState:
         for _ in range(n_events):
             event = self.sim.step()
             if event is None:
-                # Session exhausted — start a new one with the next seed.
-                self.bid_id = None
-                self.ask_id = None
-                self.last_quote_t = -_QUOTE_INTERVAL
+                # Session exhausted — carry over cash and inventory into the
+                # next seed so PnL and position accumulate across sessions.
+                carry_cash      = self.cash
+                carry_inventory = self.inventory
+                carry_fills     = self.fills
                 self.seed += 1
                 self._init_session(self.seed)
+                self.cash      = carry_cash
+                self.inventory = carry_inventory
+                self.fills     = carry_fills
                 break
             self._process_event(event)
 

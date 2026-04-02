@@ -142,7 +142,8 @@ class SimState:
                     "price": price, "quantity": qty,
                     "side": "buy", "is_agent": True,
                 })
-                self.bid_id = None
+                self.bid_id      = None
+                self._last_bid_q = None   # order no longer in book
 
             elif self.ask_id is not None and maker == self.ask_id:
                 # Our resting ask was filled — we sold.
@@ -153,7 +154,8 @@ class SimState:
                     "price": price, "quantity": qty,
                     "side": "sell", "is_agent": True,
                 })
-                self.ask_id = None
+                self.ask_id      = None
+                self._last_ask_q = None   # order no longer in book
 
             else:
                 # Background market trade (Hawkes order flow).

@@ -32,27 +32,16 @@ export default function LobDepthChart({
   const CH  = VH - PT - PB;   // chart height
   const CX  = PL + CW / 2;    // centre x (split bids/asks)
 
-  // Price range: span all LOB levels + agent quotes, with padding.
-  // Falls back to mid ± 12 ticks when no data is available.
-  const allPrices: number[] = [
-    midPrice,
-    ...bids.map((l) => l.price),
-    ...asks.map((l) => l.price),
-  ];
-  if (agentBid != null) allPrices.push(agentBid);
-  if (agentAsk != null) allPrices.push(agentAsk);
-
-  const rawMin = Math.min(...allPrices);
-  const rawMax = Math.max(...allPrices);
-  const span   = rawMax - rawMin;
-  // Adaptive tick: targets ~15 grid lines regardless of price scale (works for $0.01 or $64,000)
-  const TICK   = span > 0
-    ? Math.pow(10, Math.floor(Math.log10(span / 15)))
-    : 0.01;
-  const pad    = Math.max(span * 0.15, 4 * TICK);
-  const pMin   = rawMin - pad;
-  const pMax   = rawMax + pad;
+  // Y-axis: always centre on midPrice ± 0.5%, regardless of where LOB levels are.
+  // This keeps the chart stable when only a few sparse levels exist and prevents
+  // stale far-out levels from collapsing the visible range to a single pixel row.
+  const HALF_RANGE = Math.max(midPrice * 0.005, 0.05);   // 0.5% of mid, min 0.05
+  const pMin  = midPrice - HALF_RANGE;
+  const pMax  = midPrice + HALF_RANGE;
   const pRange = pMax - pMin;
+
+  // Adaptive tick: targets ~10 grid lines within the fixed range
+  const TICK  = Math.pow(10, Math.floor(Math.log10(pRange / 10)));
 
   const yS = (price: number) => PT + ((pMax - price) / pRange) * CH;
 

@@ -144,9 +144,9 @@ class SimState:
                 mid = self._last_valid_mid
         self._last_valid_mid = mid
 
-        # Filter LOB levels to ±0.3% of validated mid — keeps near-touch BTC depth.
-        # At $66K this is ±$198; tight enough to avoid stale levels, wide enough for real book.
-        half_pct = mid * 0.003
+        # Filter LOB levels to ±1% of validated mid — keeps near-touch BTC depth.
+        # At $66K this is ±$660; catches real top-of-book while rejecting stale crash-era levels.
+        half_pct = mid * 0.01
         lob = {
             "bids": [l for l in raw_lob["bids"] if abs(l["price"] - mid) <= half_pct],
             "asks": [l for l in raw_lob["asks"] if abs(l["price"] - mid) <= half_pct],

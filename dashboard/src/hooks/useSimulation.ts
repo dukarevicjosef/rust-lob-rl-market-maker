@@ -191,7 +191,11 @@ export function useSimulation() {
           setState((prev) => ({
             ...prev,
             isRunning:      replayDone ? false : prev.isRunning,
-            lob:            tick.lob,
+            // Persist last non-empty LOB — empty arrays from filtered ticks
+            // must not overwrite a valid book state (causes "AWAITING DATA" flashing).
+            lob: (tick.lob.bids.length > 0 || tick.lob.asks.length > 0)
+              ? tick.lob
+              : prev.lob,
             agent:          tick.agent,
             elapsedTime:    simTime,
             eventsProcessed: prev.eventsProcessed + 1,

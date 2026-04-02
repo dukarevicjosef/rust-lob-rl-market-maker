@@ -87,7 +87,8 @@ export default function LobDepthChart({
       })()}
 
       {/* Bids — green, from centre going left */}
-      {bids.map((lvl, i) => {
+      {/* Guard against stale persisted levels that crossed mid after a price move */}
+      {bids.filter((lvl) => lvl.price <= midPrice).map((lvl, i) => {
         const y  = yS(lvl.price);
         const w  = qW(lvl.quantity);
         return (
@@ -112,7 +113,7 @@ export default function LobDepthChart({
       })}
 
       {/* Asks — red, from centre going right */}
-      {asks.map((lvl, i) => {
+      {asks.filter((lvl) => lvl.price >= midPrice).map((lvl, i) => {
         const y  = yS(lvl.price);
         const w  = qW(lvl.quantity);
         return (

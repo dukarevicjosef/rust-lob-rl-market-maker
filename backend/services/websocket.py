@@ -239,6 +239,14 @@ class SimState:
                 self.last_quote_t = self.t
                 return
 
+            # Sanity guard: never place quotes more than 5% from mid.
+            # Protects against extreme AS formula outputs under high inventory
+            # or unusual sigma values.
+            _max_offset = mid * 0.05
+            if bid_p < mid - _max_offset or ask_p > mid + _max_offset:
+                self.last_quote_t = self.t
+                return
+
             # Clamp to the live spread so quotes never cross the book.
             # When AS skewing pushes an ask below best_bid (or bid above
             # best_ask) we pin it one tick inside the market spread.  This

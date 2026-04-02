@@ -45,9 +45,10 @@ export default function LobDepthChart({
 
   const yS = (price: number) => PT + ((pMax - price) / pRange) * CH;
 
-  // Max quantity across all levels (for normalisation)
+  // Normalise against the actual data — not a fixed floor of 1.
+  // BTC quantities (0.001–5.0) would otherwise all render as sub-pixel bars.
   const maxQty = Math.max(
-    1,
+    1e-9,
     ...bids.map((l) => l.quantity),
     ...asks.map((l) => l.quantity),
   );
@@ -97,14 +98,14 @@ export default function LobDepthChart({
               width={w}
               height={rowH}
               fill="#00d26a"
-              fillOpacity={0.25 - i * 0.015}
+              fillOpacity={0.55 - i * 0.04}
             />
             <line
               x1={CX - w} x2={CX}
               y1={y}       y2={y}
               stroke="#00d26a"
-              strokeOpacity={0.5}
-              strokeWidth={0.5}
+              strokeOpacity={0.8}
+              strokeWidth={0.8}
             />
           </g>
         );
@@ -122,14 +123,14 @@ export default function LobDepthChart({
               width={w}
               height={rowH}
               fill="#ff3b3b"
-              fillOpacity={0.25 - i * 0.015}
+              fillOpacity={0.55 - i * 0.04}
             />
             <line
               x1={CX} x2={CX + w}
               y1={y}  y2={y}
               stroke="#ff3b3b"
-              strokeOpacity={0.5}
-              strokeWidth={0.5}
+              strokeOpacity={0.8}
+              strokeWidth={0.8}
             />
           </g>
         );

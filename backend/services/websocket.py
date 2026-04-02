@@ -136,17 +136,18 @@ class SimState:
                 return None
             mid = self._last_valid_mid
 
-        # Spike filter: reject single-frame jumps >0.5% from the last accepted mid.
-        # Small real moves (many frames × 0.5% each) pass through; corrupted values don't.
-        # Replaces the heavy EMA (0.99 coeff = 10s lag) that caused mid to trail real price.
+        # Spike filter: each replay frame aggregates ~30 seconds of real market data,
+        # so per-frame moves of 5%+ can be legitimate (BTC flash crash = 6% in 40s).
+        # We only reject extreme outliers (>10%) that indicate corrupted LOB state.
         if self._last_valid_mid is not None:
-            if abs(mid - self._last_valid_mid) / self._last_valid_mid > 0.005:
+            if abs(mid - self._last_valid_mid) / self._last_valid_mid > 0.10:
                 mid = self._last_valid_mid
         self._last_valid_mid = mid
 
-        # Filter LOB levels to ±1% of validated mid — keeps near-touch BTC depth.
-        # At $66K this is ±$660; catches real top-of-book while rejecting stale crash-era levels.
-        half_pct = mid * 0.01
+        # Filter LOB levels to ±0.5% of validated mid.
+        # Now that the spike filter correctly tracks real price moves,
+        # mid is accurate and ±0.5% captures the near-touch book.
+        half_pct = mid * 0.005
         # Enforce correct side: bids must be ≤ mid, asks ≥ mid.
         # Crossed/stale levels (e.g. pre-crash bids still above current mid) cause
         # all bars to render as the same color in the depth chart.

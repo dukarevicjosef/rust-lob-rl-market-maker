@@ -32,11 +32,23 @@ export default function LobDepthChart({
   const CH  = VH - PT - PB;   // chart height
   const CX  = PL + CW / 2;    // centre x (split bids/asks)
 
-  // Price range: mid ± 15 ticks of 0.01
-  const TICK  = 0.01;
-  const RANGE = 12 * TICK;
-  const pMax  = midPrice + RANGE;
-  const pMin  = midPrice - RANGE;
+  // Price range: span all LOB levels + agent quotes, with padding.
+  // Falls back to mid ± 12 ticks when no data is available.
+  const TICK = 0.01;
+  const allPrices: number[] = [
+    midPrice,
+    ...bids.map((l) => l.price),
+    ...asks.map((l) => l.price),
+  ];
+  if (agentBid != null) allPrices.push(agentBid);
+  if (agentAsk != null) allPrices.push(agentAsk);
+
+  const rawMin = Math.min(...allPrices);
+  const rawMax = Math.max(...allPrices);
+  const span   = rawMax - rawMin;
+  const pad    = Math.max(span * 0.15, 4 * TICK);
+  const pMin   = rawMin - pad;
+  const pMax   = rawMax + pad;
   const pRange = pMax - pMin;
 
   const yS = (price: number) => PT + ((pMax - price) / pRange) * CH;
@@ -60,22 +72,26 @@ export default function LobDepthChart({
       viewBox={`0 0 ${VW} ${VH}`}
       preserveAspectRatio="xMidYMid meet"
     >
-      {/* Grid lines at each tick */}
-      {[...Array(25)].map((_, i) => {
-        const p = pMax - i * TICK;
-        if (p < pMin) return null;
-        const y = yS(p);
-        return (
-          <line
-            key={i}
-            x1={PL} x2={PL + CW}
-            y1={y}  y2={y}
-            stroke={p === midPrice ? "#2a2a2a" : "#131313"}
-            strokeWidth={p === midPrice ? 0.8 : 0.4}
-            strokeDasharray={p === midPrice ? "3 3" : undefined}
-          />
-        );
-      })}
+      {/* Grid lines at each tick within the dynamic range */}
+      {(() => {
+        const firstTick = Math.ceil(pMin / TICK) * TICK;
+        const lines = [];
+        for (let p = firstTick; p <= pMax + TICK * 0.5; p = Math.round((p + TICK) * 1e6) / 1e6) {
+          const y   = yS(p);
+          const atMid = Math.abs(p - midPrice) < TICK * 0.01;
+          lines.push(
+            <line
+              key={p.toFixed(4)}
+              x1={PL} x2={PL + CW}
+              y1={y}  y2={y}
+              stroke={atMid ? "#2a2a2a" : "#131313"}
+              strokeWidth={atMid ? 0.8 : 0.4}
+              strokeDasharray={atMid ? "3 3" : undefined}
+            />
+          );
+        }
+        return lines;
+      })()}
 
       {/* Bids — green, from centre going left */}
       {bids.map((lvl, i) => {
@@ -190,27 +206,31 @@ export default function LobDepthChart({
         </>
       )}
 
-      {/* Price labels */}
-      {[...Array(25)].map((_, i) => {
-        const p = pMax - i * TICK;
-        if (p < pMin) return null;
-        // Only label every 2 ticks
-        if (i % 2 !== 0) return null;
-        const y = yS(p);
-        return (
-          <text
-            key={`lbl-${i}`}
-            x={PL - 3}
-            y={y + 3}
-            textAnchor="end"
-            fill={p === Math.round(midPrice * 100) / 100 ? "#ff8c00" : "#444"}
-            fontSize={6.5}
-            fontFamily="monospace"
-          >
-            {p.toFixed(2)}
-          </text>
-        );
-      })}
+      {/* Price labels — every 2 ticks */}
+      {(() => {
+        const firstTick = Math.ceil(pMin / TICK) * TICK;
+        const labels = [];
+        let idx = 0;
+        for (let p = firstTick; p <= pMax + TICK * 0.5; p = Math.round((p + TICK) * 1e6) / 1e6, idx++) {
+          if (idx % 2 !== 0) continue;
+          const y     = yS(p);
+          const atMid = Math.abs(p - midPrice) < TICK * 0.01;
+          labels.push(
+            <text
+              key={`lbl-${p.toFixed(4)}`}
+              x={PL - 3}
+              y={y + 3}
+              textAnchor="end"
+              fill={atMid ? "#ff8c00" : "#444"}
+              fontSize={6.5}
+              fontFamily="monospace"
+            >
+              {p.toFixed(2)}
+            </text>
+          );
+        }
+        return labels;
+      })()}
 
       {/* Spread band */}
       {agentBid && agentAsk && (

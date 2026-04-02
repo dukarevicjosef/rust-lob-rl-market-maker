@@ -1,12 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useCallback } from "react";
-import type { TradeRecord, MidPoint, AgentState } from "@/hooks/useSimulation";
+import type { TradeRecord, MidPoint } from "@/hooks/useSimulation";
 
 interface TradeFlowChartProps {
   trades:     TradeRecord[];
   midHistory: MidPoint[];
-  agent:      AgentState | null;
   simTime:    number;
 }
 
@@ -18,13 +17,13 @@ const PAD_B = 28;
 export default function TradeFlowChart({
   trades,
   midHistory,
-  agent,
   simTime,
 }: TradeFlowChartProps) {
   const canvasRef   = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const draw = useCallback(() => {
+    void simTime; // used to trigger redraws
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
@@ -52,10 +51,6 @@ export default function TradeFlowChart({
     const prices: number[] = [];
     for (const t of trades)     if (t.sim_time >= minT) prices.push(t.price);
     for (const m of midHistory) if (m.sim_time >= minT) prices.push(m.mid);
-    if (agent) {
-      if (agent.bid_quote != null) prices.push(agent.bid_quote);
-      if (agent.ask_quote != null) prices.push(agent.ask_quote);
-    }
 
     let minP = Math.min(...prices);
     let maxP = Math.max(...prices);
@@ -151,34 +146,12 @@ export default function TradeFlowChart({
       ctx.fill();
     }
 
-    // ── Current agent bid/ask quote lines ─────────────────────────────────────
-    if (agent) {
-      const drawQuote = (price: number, color: string, label: string) => {
-        const y = py(price);
-        if (y < PAD_T - 2 || y > H - PAD_B + 2) return;
-        ctx.setLineDash([4, 5]);
-        ctx.strokeStyle = color;
-        ctx.lineWidth   = 0.8;
-        ctx.beginPath();
-        ctx.moveTo(PAD_L, y);
-        ctx.lineTo(W - PAD_R, y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle = color;
-        ctx.font      = "8px 'JetBrains Mono', monospace";
-        ctx.textAlign = "left";
-        ctx.fillText(`${label} ${price.toFixed(3)}`, PAD_L + 4, y - 3);
-      };
-      if (agent.bid_quote != null) drawQuote(agent.bid_quote, "rgba(0, 210, 106, 0.75)", "BID");
-      if (agent.ask_quote != null) drawQuote(agent.ask_quote, "rgba(255, 59, 59, 0.75)",  "ASK");
-    }
-
     // ── Axis border ───────────────────────────────────────────────────────────
     ctx.strokeStyle = "#1e1e1e";
     ctx.lineWidth   = 1;
     ctx.strokeRect(PAD_L, PAD_T, plotW, plotH);
 
-  }, [trades, midHistory, agent, simTime]);
+  }, [trades, midHistory, simTime]);
 
   // Redraw when data changes
   useEffect(() => { draw(); }, [draw]);

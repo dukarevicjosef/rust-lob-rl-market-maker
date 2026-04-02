@@ -58,7 +58,7 @@ export default function LivePage() {
         <div
           className="row-span-2 border-r border-[#1e1e1e] overflow-hidden"
         >
-          <Panel title="LOB DEPTH" subtitle="±12 TICKS" className="border-0 h-full">
+          <Panel title="LOB DEPTH" subtitle="AGENT QUOTES" className="border-0 h-full">
             <div className="h-full">
               <LobDepthChart
                 bids={bids}
@@ -66,7 +66,7 @@ export default function LivePage() {
                 midPrice={mid}
                 agentBid={sim.agent?.bid_quote ?? undefined}
                 agentAsk={sim.agent?.ask_quote ?? undefined}
-              />
+            />
             </div>
           </Panel>
         </div>
@@ -78,7 +78,6 @@ export default function LivePage() {
               <TradeFlowChart
                 trades={sim.tradeHistory}
                 midHistory={sim.midHistory}
-                agent={sim.agent}
                 simTime={sim.elapsedTime}
               />
             </div>

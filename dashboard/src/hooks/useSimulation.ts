@@ -191,21 +191,13 @@ export function useSimulation() {
           setState((prev) => ({
             ...prev,
             isRunning:      replayDone ? false : prev.isRunning,
-            // Persist last non-empty LOB — empty arrays from filtered ticks must not
-            // overwrite a valid book state (causes "AWAITING DATA" flashing).
-            // Exception: if mid has moved >0.5% from the best persisted bid/ask,
-            // the old levels are stale and must be discarded to avoid wrong-side bars.
-            lob: (() => {
-              const hasNew = tick.lob.bids.length > 0 || tick.lob.asks.length > 0;
-              if (hasNew) return tick.lob;
-              const prevBestBid = prev.lob?.bids[0]?.price;
-              const prevBestAsk = prev.lob?.asks[0]?.price;
-              const midNow      = tick.mid_price;
-              const stale =
-                (prevBestBid != null && prevBestBid > midNow * 1.005) ||
-                (prevBestAsk != null && prevBestAsk < midNow * 0.995);
-              return stale ? tick.lob : prev.lob;
-            })(),
+            // Persist last non-empty LOB — empty arrays from sparse replay ticks
+            // must not overwrite a valid book state (causes "AWAITING DATA" flashing).
+            // Wrong-side levels (bids above mid after a price move) are already
+            // filtered out per-render in LobDepthChart via the midPrice guard.
+            lob: (tick.lob.bids.length > 0 || tick.lob.asks.length > 0)
+              ? tick.lob
+              : prev.lob,
             agent:          tick.agent,
             elapsedTime:    simTime,
             eventsProcessed: prev.eventsProcessed + 1,

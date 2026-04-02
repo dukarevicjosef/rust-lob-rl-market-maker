@@ -20,7 +20,7 @@ export interface AgentState {
   kappa_offset:   number;
   fills_total:    number;
   sharpe:         number;
-  skew_mode:      "normal" | "skew" | "suppress" | "dump";
+  skew_mode:      "normal" | "skew" | "suppress" | "dump" | "replay";
 }
 
 export interface Trade {
@@ -31,15 +31,16 @@ export interface Trade {
 }
 
 export interface TickData {
-  type:       string;
-  timestamp:  number;
-  mid_price:  number;
-  spread:     number;
-  best_bid:   number;
-  best_ask:   number;
-  lob:        { bids: LobLevel[]; asks: LobLevel[] };
-  agent:      AgentState;
-  trades:     Trade[];
+  type:             string;
+  timestamp:        number;
+  mid_price:        number;
+  spread:           number;
+  best_bid:         number;
+  best_ask:         number;
+  lob:              { bids: LobLevel[]; asks: LobLevel[] };
+  agent:            AgentState;
+  trades:           Trade[];
+  replay_progress?: number;
 }
 
 export interface PricePoint {
@@ -62,9 +63,11 @@ export interface MidPoint {
 }
 
 export interface SimConfig {
-  seed:     number;
-  speed:    number;
-  strategy: string;
+  seed:        number;
+  speed:       number;
+  strategy:    string;
+  mode:        "simulate" | "replay";
+  replayPath?: string;
 }
 
 interface SimState {
@@ -78,6 +81,8 @@ interface SimState {
   midHistory:      MidPoint[];
   eventsProcessed: number;
   elapsedTime:     number;
+  mode:            "simulate" | "replay";
+  replayProgress:  number;
 }
 
 const INITIAL: SimState = {
@@ -91,6 +96,8 @@ const INITIAL: SimState = {
   midHistory:      [],
   eventsProcessed: 0,
   elapsedTime:     0,
+  mode:            "simulate",
+  replayProgress:  0,
 };
 
 const MAX_PRICE_PTS  = 500;
@@ -103,12 +110,11 @@ const WS_URL         = "ws://localhost:8000/ws/live";
 
 export function useSimulation() {
   const wsRef          = useRef<WebSocket | null>(null);
-  const simOffsetRef   = useRef<number>(0);   // cumulative sim-time across sessions
-  const lastSimTimeRef = useRef<number>(0);   // last received sim_time
+  const simOffsetRef   = useRef<number>(0);
+  const lastSimTimeRef = useRef<number>(0);
   const [state, setState] = useState<SimState>(INITIAL);
 
-  // Pending config for resume
-  const lastCfgRef = useRef<SimConfig>({ seed: 42, speed: 1.0, strategy: "as" });
+  const lastCfgRef = useRef<SimConfig>({ seed: 42, speed: 1.0, strategy: "as", mode: "simulate" });
 
   // ── Send helper ────────────────────────────────────────────────────────────
 
@@ -132,7 +138,6 @@ export function useSimulation() {
       ws.onopen  = () => setState(() => ({ ...INITIAL, isConnected: true }));
       ws.onclose = () => {
         setState((s) => ({ ...s, isConnected: false, isRunning: false }));
-        // Reconnect after 2s
         if (!cancelled) setTimeout(connect, 2000);
       };
       ws.onerror = () => ws.close();
@@ -145,12 +150,12 @@ export function useSimulation() {
           const now     = Date.now();
           const rawTime = tick.timestamp;
 
-          // Detect session reset (sim_time jumps back to near 0)
           if (rawTime < lastSimTimeRef.current - SESSION_RESET_THRESHOLD) {
             simOffsetRef.current += lastSimTimeRef.current;
           }
           lastSimTimeRef.current = rawTime;
           const simTime = simOffsetRef.current + rawTime;
+
           const newPt: PricePoint = {
             time: now,
             mid:  tick.mid_price,
@@ -169,13 +174,17 @@ export function useSimulation() {
             sim_time:  simTime,
           }));
 
+          const progress    = tick.replay_progress ?? 0;
+          const replayDone  = progress >= 1.0;
+
           setState((prev) => ({
             ...prev,
-            isRunning:       true,
-            lob:             tick.lob,
-            agent:           tick.agent,
-            elapsedTime:     simTime,
+            isRunning:      replayDone ? false : prev.isRunning,
+            lob:            tick.lob,
+            agent:          tick.agent,
+            elapsedTime:    simTime,
             eventsProcessed: prev.eventsProcessed + 1,
+            replayProgress: tick.replay_progress !== undefined ? progress : prev.replayProgress,
             priceHistory: [
               ...prev.priceHistory.slice(-(MAX_PRICE_PTS - 1)),
               newPt,
@@ -208,8 +217,23 @@ export function useSimulation() {
   const start = useCallback(
     (cfg: SimConfig) => {
       lastCfgRef.current = cfg;
-      send({ action: "start", config: cfg });
-      setState((s) => ({ ...s, isRunning: true, isPaused: false }));
+      send({
+        action: "start",
+        config: {
+          mode:        cfg.mode,
+          seed:        cfg.seed,
+          speed:       cfg.speed,
+          strategy:    cfg.strategy,
+          replay_path: cfg.replayPath,
+        },
+      });
+      setState((s) => ({
+        ...s,
+        isRunning:      true,
+        isPaused:       false,
+        mode:           cfg.mode,
+        replayProgress: cfg.mode === "replay" ? 0 : s.replayProgress,
+      }));
     },
     [send],
   );
@@ -225,7 +249,13 @@ export function useSimulation() {
   }, [send]);
 
   const resume = useCallback(() => {
-    send({ action: "start", config: lastCfgRef.current });
+    send({ action: "start", config: {
+      mode:        lastCfgRef.current.mode,
+      seed:        lastCfgRef.current.seed,
+      speed:       lastCfgRef.current.speed,
+      strategy:    lastCfgRef.current.strategy,
+      replay_path: lastCfgRef.current.replayPath,
+    }});
     setState((s) => ({ ...s, isRunning: true, isPaused: false }));
   }, [send]);
 
@@ -242,7 +272,12 @@ export function useSimulation() {
       send({ action: "reset", seed });
       simOffsetRef.current   = 0;
       lastSimTimeRef.current = 0;
-      setState((s) => ({ ...INITIAL, isConnected: s.isConnected }));
+      setState((s) => ({
+        ...INITIAL,
+        isConnected:    s.isConnected,
+        mode:           s.mode,
+        replayProgress: 0,
+      }));
     },
     [send],
   );

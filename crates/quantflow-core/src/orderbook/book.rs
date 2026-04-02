@@ -183,6 +183,61 @@ impl OrderBook {
         }
     }
 
+    /// Reduce resting quantity at a given price level by `qty`, consuming
+    /// orders FIFO (oldest first). Stops when qty is exhausted or the level
+    /// is empty. Used by the replay engine to apply cancel events without
+    /// requiring individual order IDs.
+    pub fn reduce_quantity_at_price(&mut self, side: Side, price: Price, qty: Quantity) {
+        let mut remaining = qty.0;
+        match side {
+            Side::Bid => {
+                let key = std::cmp::Reverse(price);
+                while remaining > 0 {
+                    let front_qty = self.bids.get(&key)
+                        .and_then(|l| l.front())
+                        .map(|o| o.quantity.0);
+                    match front_qty {
+                        None => break,
+                        Some(order_qty) if order_qty <= remaining => {
+                            remaining -= order_qty;
+                            self.pop_front_bid(price);
+                        }
+                        Some(_) => {
+                            if let Some(level) = self.bids.get_mut(&key) {
+                                if let Some(order) = level.front_mut() {
+                                    order.quantity.0 -= remaining;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            Side::Ask => {
+                while remaining > 0 {
+                    let front_qty = self.asks.get(&price)
+                        .and_then(|l| l.front())
+                        .map(|o| o.quantity.0);
+                    match front_qty {
+                        None => break,
+                        Some(order_qty) if order_qty <= remaining => {
+                            remaining -= order_qty;
+                            self.pop_front_ask(price);
+                        }
+                        Some(_) => {
+                            if let Some(level) = self.asks.get_mut(&price) {
+                                if let Some(order) = level.front_mut() {
+                                    order.quantity.0 -= remaining;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ── Internal helpers used exclusively by matching.rs ─────────────────────
 
     /// Append a resting order at the back of its price level (new arrival).

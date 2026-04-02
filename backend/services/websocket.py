@@ -27,28 +27,43 @@ _DUMP_OFFSET    = 2 * _TICK_SIZE   # aggressive dump: 2 ticks through mid
 
 class SimState:
     """
-    Drives the Rust Hawkes LOB simulator with an Avellaneda-Stoikov agent.
-
-    The agent places resting limit orders; the Hawkes engine generates
-    background order flow that fills them.  Fill detection is exact:
-    we track order IDs returned by ``place_limit_order`` and match them
-    against ``maker_id`` fields in incoming trade events.
+    Drives either:
+      - mode="simulate"  Rust Hawkes LOB simulator + Avellaneda-Stoikov agent
+      - mode="replay"    Rust ReplayEngine playing back normalised Parquet data
+                         (no agent — market-only view)
     """
 
-    def __init__(self, seed: int, strategy: str = "as") -> None:
-        self.seed     = seed
-        self.strategy = strategy
-        # Load SAC model once; reused across sessions within the same runner.
-        self._sac = None
-        if strategy == "sac":
-            try:
-                from backend.services.sac_agent import SACAgent
-                self._sac = SACAgent()
-                print("SAC model loaded.")
-            except (ImportError, FileNotFoundError) as exc:
-                print(f"[warn] {exc} — falling back to AS strategy.")
-                self.strategy = "as"
-        self._init_session(seed)
+    def __init__(
+        self,
+        seed: int = 0,
+        strategy: str = "as",
+        mode: str = "simulate",
+        replay_path: str | None = None,
+    ) -> None:
+        self.mode = mode
+        self.t: float = 0.0
+        self._pending_trades: list[dict] = []
+
+        if mode == "replay":
+            from quantflow import ReplayEngine
+            self.replay: Any = ReplayEngine(replay_path)
+            self.sim    = None
+            self.strat  = None
+            self._sac   = None
+        else:
+            self.replay = None
+            self.seed     = seed
+            self.strategy = strategy
+            self._sac = None
+            if strategy == "sac":
+                try:
+                    from backend.services.sac_agent import SACAgent
+                    self._sac = SACAgent()
+                    print("SAC model loaded.")
+                except (ImportError, FileNotFoundError) as exc:
+                    print(f"[warn] {exc} — falling back to AS strategy.")
+                    self.strategy = "as"
+            self._init_session(seed)
 
     def _init_session(self, seed: int) -> None:
         self.sim = HawkesSimulator.new({
@@ -78,10 +93,8 @@ class SimState:
         self.last_quote_t: float  = -_QUOTE_INTERVAL
         self.t:          float    = 0.0
 
-        # Actual placed order prices for display (None = no resting order).
         self._last_bid_q:      float | None = None
         self._last_ask_q:      float | None = None
-        # SAC-derived parameters for display.
         self._last_gamma:      float = self.strat.gamma
         self._last_kappa_off:  float = 0.0
 
@@ -91,16 +104,91 @@ class SimState:
     # ── Public entry point ────────────────────────────────────────────────────
 
     def run_frame(self, n_events: int) -> dict[str, Any] | None:
-        """
-        Advance the simulator by *n_events* Hawkes events.
-        Returns a tick dict suitable for JSON broadcast, or None if the
-        book is still empty.
-        """
+        if self.mode == "replay":
+            return self._run_frame_replay(n_events)
+        return self._run_frame_simulate(n_events)
+
+    # ── Replay frame ──────────────────────────────────────────────────────────
+
+    def _run_frame_replay(self, n_events: int) -> dict[str, Any] | None:
+        events = self.replay.step_n(n_events)
+        if not events:
+            return None
+
+        mid = self.replay.mid_price()
+        if mid is None:
+            return None
+
+        lob = self._replay_lob_snapshot()
+
+        trades: list[dict] = []
+        for e in events:
+            if e["event_type"] in (0, 1):  # MarketBuy, MarketSell
+                trades.append({
+                    "price":    e["price"],
+                    "quantity": e["quantity"],
+                    "side":     "buy" if e["event_type"] == 0 else "sell",
+                    "is_agent": False,
+                })
+
+        best_bid = lob["bids"][0]["price"] if lob["bids"] else round(mid - _TICK_SIZE, 4)
+        best_ask = lob["asks"][0]["price"] if lob["asks"] else round(mid + _TICK_SIZE, 4)
+
+        if events:
+            self.t = events[-1]["timestamp"]
+
+        return {
+            "type":      "tick",
+            "timestamp": round(self.t, 3),
+            "mid_price": round(mid, 4),
+            "spread":    round(best_ask - best_bid, 4),
+            "best_bid":  round(best_bid, 4),
+            "best_ask":  round(best_ask, 4),
+            "lob":       lob,
+            "agent": {
+                "inventory":      0,
+                "pnl":            0.0,
+                "unrealized_pnl": 0.0,
+                "bid_quote":      None,
+                "ask_quote":      None,
+                "gamma":          0.0,
+                "kappa_offset":   0.0,
+                "fills_total":    0,
+                "sharpe":         0.0,
+                "skew_mode":      "replay",
+            },
+            "trades":          trades,
+            "replay_progress": round(self.replay.progress(), 4),
+        }
+
+    def _replay_lob_snapshot(self) -> dict:
+        try:
+            rb = self.replay.snapshot(10)
+            bids: list[dict] = []
+            asks: list[dict] = []
+            cum_b = cum_a = 0.0
+            for level in rb["bids"]:
+                p, q = level[0], level[1]
+                if p is None or math.isnan(p) or q <= 0:
+                    continue
+                cum_b += q
+                bids.append({"price": round(p, 4), "quantity": round(q, 6), "cumulative": round(cum_b, 6)})
+            for level in rb["asks"]:
+                p, q = level[0], level[1]
+                if p is None or math.isnan(p) or q <= 0:
+                    continue
+                cum_a += q
+                asks.append({"price": round(p, 4), "quantity": round(q, 6), "cumulative": round(cum_a, 6)})
+            return {"bids": bids, "asks": asks}
+        except Exception:
+            return {"bids": [], "asks": []}
+
+    # ── Simulate frame ────────────────────────────────────────────────────────
+
+    def _run_frame_simulate(self, n_events: int) -> dict[str, Any] | None:
         for _ in range(n_events):
             event = self.sim.step()
             if event is None:
-                # Session exhausted — carry over cash and inventory into the
-                # next seed so PnL and position accumulate across sessions.
                 carry_cash      = self.cash
                 carry_inventory = self.inventory
                 carry_fills     = self.fills
@@ -122,7 +210,6 @@ class SimState:
     def _process_event(self, event: dict) -> None:
         self.t = event["sim_time"]
 
-        # Keep SAC rolling mid-price buffer up to date.
         if self._sac is not None:
             mid = self.sim.mid_price()
             if mid is not None:
@@ -134,7 +221,6 @@ class SimState:
             qty   = trade["qty"]
 
             if self.bid_id is not None and maker == self.bid_id:
-                # Our resting bid was filled — we bought.
                 self.inventory += qty
                 self.cash      -= qty * price
                 self.fills     += 1
@@ -143,10 +229,9 @@ class SimState:
                     "side": "buy", "is_agent": True,
                 })
                 self.bid_id      = None
-                self._last_bid_q = None   # order no longer in book
+                self._last_bid_q = None
 
             elif self.ask_id is not None and maker == self.ask_id:
-                # Our resting ask was filled — we sold.
                 self.inventory -= qty
                 self.cash      += qty * price
                 self.fills     += 1
@@ -155,10 +240,9 @@ class SimState:
                     "side": "sell", "is_agent": True,
                 })
                 self.ask_id      = None
-                self._last_ask_q = None   # order no longer in book
+                self._last_ask_q = None
 
             else:
-                # Background market trade (Hawkes order flow).
                 side = "buy" if event["event_type"] % 2 == 0 else "sell"
                 self._pending_trades.append({
                     "price": price, "quantity": qty,
@@ -171,12 +255,10 @@ class SimState:
     # ── Quote management ──────────────────────────────────────────────────────
 
     def _refresh_quotes(self) -> None:
-        """Cancel stale quotes and place fresh AS quotes."""
         mid = self.sim.mid_price()
         if mid is None:
             return
 
-        # Cancel existing resting orders and clear stored display prices.
         if self.bid_id is not None:
             self.sim.cancel_agent_order(self.bid_id)
             self.bid_id    = None
@@ -193,10 +275,8 @@ class SimState:
         inv_ratio = abs(self.inventory) / _INV_LIMIT
 
         if inv_ratio >= 1.0:
-            # Inventory dump: aggressive limit order 2 ticks through mid.
             if self.inventory > 0:
                 dump_p = round(mid - _DUMP_OFFSET, 4)
-                # Safety: must still be > best_bid to avoid crossing bid side.
                 if best_bid is None or dump_p > best_bid[0]:
                     try:
                         self.ask_id = self.sim.place_limit_order("ask", dump_p, _QUOTE_QTY)
@@ -211,13 +291,10 @@ class SimState:
                         pass
         else:
             if self._sac is not None:
-                # SAC agent: derive gamma and kappa dynamically each quote refresh.
                 gamma, kappa_off = self._sac.get_action(
                     self.sim, mid, self.inventory, self.cash, self.t
                 )
                 kappa = _SAC_BASE_KAPPA * (1.0 + kappa_off)
-                # AvellanedaStoikov is a PyO3 object — attributes are not
-                # writable. Recreate with updated params instead.
                 self.strat = AvellanedaStoikov(
                     gamma=gamma,
                     kappa=kappa,
@@ -239,18 +316,11 @@ class SimState:
                 self.last_quote_t = self.t
                 return
 
-            # Sanity guard: never place quotes more than 5% from mid.
-            # Protects against extreme AS formula outputs under high inventory
-            # or unusual sigma values.
             _max_offset = mid * 0.05
             if bid_p < mid - _max_offset or ask_p > mid + _max_offset:
                 self.last_quote_t = self.t
                 return
 
-            # Clamp to the live spread so quotes never cross the book.
-            # When AS skewing pushes an ask below best_bid (or bid above
-            # best_ask) we pin it one tick inside the market spread.  This
-            # preserves the directional intent while staying valid.
             if best_ask is not None and bid_p >= best_ask[0]:
                 bid_p = round(best_ask[0] - _TICK_SIZE, 4)
             if best_bid is not None and ask_p <= best_bid[0]:
@@ -282,11 +352,9 @@ class SimState:
     # ── Tick assembly ─────────────────────────────────────────────────────────
 
     def _build_tick(self, mid: float) -> dict[str, Any]:
-        # Use actual placed order prices; None when no resting order exists.
         bid_q = self._last_bid_q
         ask_q = self._last_ask_q
 
-        # skew_mode is purely for display — compute from current strat params.
         _, skew_m = self.strat.compute_quotes_skewed(mid, self.inventory, self.t)
         inv_ratio = abs(self.inventory) / _INV_LIMIT
         if inv_ratio >= 1.0:
@@ -403,11 +471,18 @@ class SimulationRunner:
     def disconnect(self, ws: WebSocket) -> None:
         self._conns.discard(ws)
 
-    async def start(self, seed: int = 42, speed: float = 1.0, strategy: str = "as") -> None:
+    async def start(
+        self,
+        seed: int = 42,
+        speed: float = 1.0,
+        strategy: str = "as",
+        mode: str = "simulate",
+        replay_path: str | None = None,
+    ) -> None:
         if self._task and not self._task.done():
             self._task.cancel()
             await asyncio.sleep(0)
-        self._state   = SimState(seed=seed, strategy=strategy)
+        self._state   = SimState(seed=seed, strategy=strategy, mode=mode, replay_path=replay_path)
         self._speed   = max(0.25, min(20.0, speed))
         self._running = True
         self._task    = asyncio.create_task(self._loop())
@@ -422,7 +497,12 @@ class SimulationRunner:
 
     async def reset(self, seed: int = 42) -> None:
         self.stop()
-        self._state = None
+        if self._state is not None and self._state.mode == "replay" and self._state.replay is not None:
+            # Reset replay cursor to beginning, keep SimState alive
+            self._state.replay.reset()
+            self._state.t = 0.0
+        else:
+            self._state = None
         await asyncio.sleep(0.05)
 
     async def _broadcast(self, payload: str) -> None:
@@ -441,6 +521,8 @@ class SimulationRunner:
                 tick = self._state.run_frame(n)
                 if tick:
                     await self._broadcast(json.dumps(tick))
+                    if tick.get("replay_progress", 0.0) >= 1.0:
+                        self._running = False
             await asyncio.sleep(0.1)
 
 

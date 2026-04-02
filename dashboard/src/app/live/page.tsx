@@ -6,6 +6,7 @@ import ControlBar   from "@/components/live/ControlBar";
 import LobDepthChart from "@/components/live/LobDepthChart";
 import StatsPanel   from "@/components/live/StatsPanel";
 import TradeFeed    from "@/components/live/TradeFeed";
+import TimesSales   from "@/components/live/TimesSales";
 import { useSimulation } from "@/hooks/useSimulation";
 
 // lazy-load the chart so it never runs on the server
@@ -84,10 +85,10 @@ export default function LivePage() {
           </Panel>
         </div>
 
-        {/* ── BOTTOM ROW: stats + trades ──────────────────────────────────── */}
+        {/* ── BOTTOM ROW: stats + agent fills + T&S ───────────────────────── */}
         <div
           className="grid overflow-hidden"
-          style={{ gridTemplateColumns: "1fr 1fr" }}
+          style={{ gridTemplateColumns: "1fr 1fr 1fr" }}
         >
           {/* Stats panel */}
           <div className="border-r border-[#1e1e1e] overflow-hidden">
@@ -99,10 +100,17 @@ export default function LivePage() {
             </Panel>
           </div>
 
-          {/* Trade feed */}
-          <div className="overflow-hidden">
-            <Panel title="TRADE FEED" className="border-0 h-full">
+          {/* Agent fills */}
+          <div className="border-r border-[#1e1e1e] overflow-hidden">
+            <Panel title="AGENT FILLS" className="border-0 h-full">
               <TradeFeed trades={sim.tradeHistory} />
+            </Panel>
+          </div>
+
+          {/* Times & Sales */}
+          <div className="overflow-hidden">
+            <Panel title="TIMES & SALES" className="border-0 h-full">
+              <TimesSales trades={sim.tradeHistory} />
             </Panel>
           </div>
         </div>

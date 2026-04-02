@@ -34,7 +34,6 @@ export default function LobDepthChart({
 
   // Price range: span all LOB levels + agent quotes, with padding.
   // Falls back to mid ± 12 ticks when no data is available.
-  const TICK = 0.01;
   const allPrices: number[] = [
     midPrice,
     ...bids.map((l) => l.price),
@@ -46,6 +45,10 @@ export default function LobDepthChart({
   const rawMin = Math.min(...allPrices);
   const rawMax = Math.max(...allPrices);
   const span   = rawMax - rawMin;
+  // Adaptive tick: targets ~15 grid lines regardless of price scale (works for $0.01 or $64,000)
+  const TICK   = span > 0
+    ? Math.pow(10, Math.floor(Math.log10(span / 15)))
+    : 0.01;
   const pad    = Math.max(span * 0.15, 4 * TICK);
   const pMin   = rawMin - pad;
   const pMax   = rawMax + pad;
@@ -76,12 +79,12 @@ export default function LobDepthChart({
       {(() => {
         const firstTick = Math.ceil(pMin / TICK) * TICK;
         const lines = [];
-        for (let p = firstTick; p <= pMax + TICK * 0.5; p = Math.round((p + TICK) * 1e6) / 1e6) {
-          const y   = yS(p);
-          const atMid = Math.abs(p - midPrice) < TICK * 0.01;
+        for (let p = firstTick; p <= pMax + TICK * 0.5; p = Math.round((p + TICK) * 1e8) / 1e8) {
+          const y     = yS(p);
+          const atMid = Math.abs(p - midPrice) < TICK * 0.5;
           lines.push(
             <line
-              key={p.toFixed(4)}
+              key={p}
               x1={PL} x2={PL + CW}
               y1={y}  y2={y}
               stroke={atMid ? "#2a2a2a" : "#131313"}
@@ -209,15 +212,17 @@ export default function LobDepthChart({
       {/* Price labels — every 2 ticks */}
       {(() => {
         const firstTick = Math.ceil(pMin / TICK) * TICK;
+        // Decimal places: enough to show TICK resolution without trailing zeros
+        const decimals  = Math.max(0, -Math.floor(Math.log10(TICK)));
         const labels = [];
         let idx = 0;
-        for (let p = firstTick; p <= pMax + TICK * 0.5; p = Math.round((p + TICK) * 1e6) / 1e6, idx++) {
+        for (let p = firstTick; p <= pMax + TICK * 0.5; p = Math.round((p + TICK) * 1e8) / 1e8, idx++) {
           if (idx % 2 !== 0) continue;
           const y     = yS(p);
-          const atMid = Math.abs(p - midPrice) < TICK * 0.01;
+          const atMid = Math.abs(p - midPrice) < TICK * 0.5;
           labels.push(
             <text
-              key={`lbl-${p.toFixed(4)}`}
+              key={`lbl-${p}`}
               x={PL - 3}
               y={y + 3}
               textAnchor="end"
@@ -225,7 +230,7 @@ export default function LobDepthChart({
               fontSize={6.5}
               fontFamily="monospace"
             >
-              {p.toFixed(2)}
+              {p.toFixed(decimals)}
             </text>
           );
         }

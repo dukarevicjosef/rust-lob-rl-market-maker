@@ -15,18 +15,19 @@ const TradeFlowChart = dynamic(() => import("@/components/live/TradeFlowChart"),
 export default function LivePage() {
   const sim = useSimulation();
 
+  const isReplay = sim.mode === "replay";
+
   const bids = sim.lob?.bids ?? [];
   const asks = sim.lob?.asks ?? [];
   const mid  = sim.agent?.bid_quote != null && sim.agent?.ask_quote != null
     ? (sim.agent.bid_quote + sim.agent.ask_quote) / 2
     : sim.priceHistory[sim.priceHistory.length - 1]?.mid ?? 100;
 
-  const spread = sim.agent?.bid_quote != null && sim.agent?.ask_quote != null
-    ? (sim.agent.ask_quote - sim.agent.bid_quote).toFixed(4)
-    : null;
-  const priceSubtitle = sim.agent?.bid_quote != null && sim.agent?.ask_quote != null
-    ? `BID ${sim.agent.bid_quote.toFixed(3)} / ASK ${sim.agent.ask_quote.toFixed(3)} | SPREAD ${spread}`
-    : "AWAITING DATA";
+  const priceSubtitle = isReplay
+    ? `MID ${mid.toFixed(4)} — market replay, no agent`
+    : sim.agent?.bid_quote != null && sim.agent?.ask_quote != null
+      ? `BID ${sim.agent.bid_quote.toFixed(3)} / ASK ${sim.agent.ask_quote.toFixed(3)} | SPREAD ${(sim.agent.ask_quote - sim.agent.bid_quote).toFixed(4)}`
+      : "AWAITING DATA";
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -38,6 +39,7 @@ export default function LivePage() {
         isPaused={sim.isPaused}
         eventsProcessed={sim.eventsProcessed}
         elapsedTime={sim.elapsedTime}
+        replayProgress={sim.replayProgress}
         onStart={sim.start}
         onStop={sim.stop}
         onPause={sim.pause}
@@ -56,10 +58,12 @@ export default function LivePage() {
       >
 
         {/* ── LOB DEPTH — col 1, full height ─────────────────────────────── */}
-        <div
-          className="row-span-2 border-r border-[#1e1e1e] overflow-hidden"
-        >
-          <Panel title="LOB DEPTH" subtitle="AGENT QUOTES" className="border-0 h-full">
+        <div className="row-span-2 border-r border-[#1e1e1e] overflow-hidden">
+          <Panel
+            title="LOB DEPTH"
+            subtitle={isReplay ? "REPLAY" : "AGENT QUOTES"}
+            className="border-0 h-full"
+          >
             <div className="h-full">
               <LobDepthChart
                 bids={bids}
@@ -67,7 +71,7 @@ export default function LivePage() {
                 midPrice={mid}
                 agentBid={sim.agent?.bid_quote ?? undefined}
                 agentAsk={sim.agent?.ask_quote ?? undefined}
-            />
+              />
             </div>
           </Panel>
         </div>
@@ -90,19 +94,39 @@ export default function LivePage() {
           className="grid overflow-hidden"
           style={{ gridTemplateColumns: "1fr 1fr 1fr" }}
         >
-          {/* Stats panel */}
+          {/* Stats / replay info panel */}
           <div className="border-r border-[#1e1e1e] overflow-hidden">
-            <Panel title="AGENT STATE" className="border-0 h-full">
-              <StatsPanel
-                agent={sim.agent}
-                priceHistory={sim.priceHistory}
-              />
+            <Panel
+              title={isReplay ? "MARKET REPLAY" : "AGENT STATE"}
+              className="border-0 h-full"
+            >
+              {isReplay ? (
+                <div className="flex flex-col items-center justify-center h-full gap-3 font-mono text-[0.6rem] text-[#444]">
+                  <span className="text-[#0055cc] text-xs font-bold tracking-widest">REPLAY MODE</span>
+                  <span>No agent active</span>
+                  <span className="text-[#cccccc]">{(sim.replayProgress * 100).toFixed(1)}% complete</span>
+                  <div className="w-24 h-1 bg-[#1e1e1e]">
+                    <div
+                      className="h-full bg-[#0055cc]"
+                      style={{ width: `${sim.replayProgress * 100}%` }}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <StatsPanel
+                  agent={sim.agent}
+                  priceHistory={sim.priceHistory}
+                />
+              )}
             </Panel>
           </div>
 
-          {/* Agent fills */}
+          {/* Agent fills / market trades */}
           <div className="border-r border-[#1e1e1e] overflow-hidden">
-            <Panel title="AGENT FILLS" className="border-0 h-full">
+            <Panel
+              title={isReplay ? "MARKET TRADES" : "AGENT FILLS"}
+              className="border-0 h-full"
+            >
               <TradeFeed trades={sim.tradeHistory} />
             </Panel>
           </div>

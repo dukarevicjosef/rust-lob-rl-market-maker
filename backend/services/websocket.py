@@ -51,7 +51,6 @@ class SimState:
             self.strat  = None
             self._sac   = None
             self._last_valid_mid: float | None = None
-            self._ema_mid:        float | None = None
         else:
             self.replay = None
             self.seed     = seed
@@ -137,14 +136,12 @@ class SimState:
                 return None
             mid = self._last_valid_mid
 
-        # EMA-smoothed spike filter: reject mid values deviating >0.1% from the EMA.
-        # 0.1% at $66K = $66 — no legitimate 100ms tick crosses this on BTCUSDT.
-        if self._ema_mid is None:
-            self._ema_mid = mid
-        else:
-            self._ema_mid = 0.99 * self._ema_mid + 0.01 * mid
-            if abs(mid - self._ema_mid) / self._ema_mid > 0.001:
-                mid = self._ema_mid
+        # Spike filter: reject single-frame jumps >0.5% from the last accepted mid.
+        # Small real moves (many frames × 0.5% each) pass through; corrupted values don't.
+        # Replaces the heavy EMA (0.99 coeff = 10s lag) that caused mid to trail real price.
+        if self._last_valid_mid is not None:
+            if abs(mid - self._last_valid_mid) / self._last_valid_mid > 0.005:
+                mid = self._last_valid_mid
         self._last_valid_mid = mid
 
         # Filter LOB levels to ±0.3% of validated mid — keeps near-touch BTC depth.
@@ -158,8 +155,13 @@ class SimState:
         trades: list[dict] = []
         for e in events:
             if e["event_type"] in (0, 1):  # MarketBuy, MarketSell
+                price = e.get("price") or mid
+                # Clamp to ±0.5% of validated mid — stale LOB order prices can be
+                # far from the current market (e.g. pre-crash bids still in the book).
+                if not math.isfinite(price) or abs(price - mid) / mid > 0.005:
+                    price = mid
                 trades.append({
-                    "price":    e["price"],
+                    "price":    round(price, 4),
                     "quantity": e["quantity"],
                     "side":     "buy" if e["event_type"] == 0 else "sell",
                     "is_agent": False,

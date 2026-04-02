@@ -32,7 +32,7 @@ _INITIAL_MID   = 100.0
 _PNL_SCALE     = _INITIAL_MID * _INV_LIMIT   # 5000.0
 _T_MAX_ENV     = 3600.0
 _VOL_CLIP      = 0.05
-BASE_KAPPA     = 1.5    # kappa = BASE_KAPPA × (1 + kappa_offset)
+BASE_KAPPA     = 50.0   # kappa = BASE_KAPPA × (1 + kappa_offset)
 
 
 def _locate_model() -> Path | None:

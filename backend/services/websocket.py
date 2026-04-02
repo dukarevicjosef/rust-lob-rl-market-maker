@@ -9,7 +9,7 @@ from fastapi import WebSocket
 
 from quantflow import AvellanedaStoikov, HawkesSimulator
 
-_SAC_BASE_KAPPA = 1.5   # must stay in sync with sac_agent.BASE_KAPPA
+_SAC_BASE_KAPPA = 50.0  # must stay in sync with sac_agent.BASE_KAPPA
 
 # ── Session config ────────────────────────────────────────────────────────────
 

@@ -93,7 +93,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "events_per_step":    50,
     "warm_up_events":     1_000,
     # AS base parameters
-    "base_kappa":         1.5,
+    "base_kappa":         50.0,
     "quote_qty":          10,
     # Inventory
     "inventory_limit":    50,

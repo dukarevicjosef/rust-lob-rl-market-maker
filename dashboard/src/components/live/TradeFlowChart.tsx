@@ -110,11 +110,18 @@ export default function TradeFlowChart({
     }
 
     // ── Background market trades ──────────────────────────────────────────────
+    // Radius is log-normalised against the max quantity in the visible window
+    // so both BTC (0.001–5.0) and sim-lots (1–50) produce readable bubble sizes.
+    const visibleTrades = trades.filter((t) => !t.is_agent && t.sim_time >= minT);
+    const maxQty = visibleTrades.reduce((m, t) => Math.max(m, t.quantity), 1e-9);
+    const logMax = Math.log1p(maxQty);
+
     for (const trade of trades) {
       if (trade.is_agent) continue;
       const x = tx(trade.sim_time);
       const y = py(trade.price);
-      const r = Math.max(1.5, Math.min(3.5, 1 + trade.quantity / 30));
+      // log scale: smallest trade → r≈1.5, largest in window → r≈6
+      const r = 1.5 + (Math.log1p(trade.quantity) / logMax) * 4.5;
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);
       ctx.fillStyle = trade.side === "buy"

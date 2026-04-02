@@ -2,3 +2,4 @@ pub mod arrow_export;
 pub mod binance;
 pub mod binance_ws;
 pub mod lobster;
+pub mod recorder;

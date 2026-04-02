@@ -22,10 +22,13 @@ tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 futures-util = "0.3"
 url = "2"
 chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = "3"
+parquet = { version = "53", features = ["arrow"] }
 
 [[bench]]
 name = "lob_bench"

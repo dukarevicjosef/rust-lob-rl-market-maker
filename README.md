@@ -16,7 +16,13 @@ rust-lob-rl-market-maker/
 │   │       │   └── matching.rs      # Limit, Market, IOC, FOK matching engine
 │   │       ├── data/
 │   │       │   ├── lobster.rs       # LOBSTER message & snapshot CSV parser
-│   │       │   └── arrow_export.rs  # Arrow RecordBatch + Parquet export
+│   │       │   ├── arrow_export.rs  # Arrow RecordBatch + Parquet export (snapshots)
+│   │       │   ├── binance.rs       # Binance WebSocket message types (DepthUpdate, AggTrade, BookTicker)
+│   │       │   ├── binance_ws.rs    # Async WebSocket client — combined stream (depth/trade/ticker)
+│   │       │   ├── recorder.rs      # ParquetRecorder — BatchBuffer<T> → Arrow → Parquet
+│   │       │   ├── market_event.rs  # Unified MarketEvent (12-type) + Parquet round-trip I/O
+│   │       │   ├── normalizer.rs    # BinanceNormalizer — depth diffs + trades → MarketEvent
+│   │       │   └── replay.rs        # ReplayEngine — Parquet playback through OrderBook
 │   │       ├── hawkes/
 │   │       │   ├── kernel.rs        # ExponentialKernel, PowerLawKernel, ExcitationKernel trait
 │   │       │   ├── process.rs       # MultivariateHawkes — Ogata thinning simulation
@@ -32,6 +38,7 @@ rust-lob-rl-market-maker/
 │           ├── orderbook.rs         # PyOrderBook
 │           ├── simulator.rs         # PyHawkesSimulator
 │           ├── strategy.rs          # PyAvellanedaStoikov
+│           ├── replay.rs            # PyReplayEngine — historical Parquet playback from Python
 │           └── functions.rs         # calibrate_hawkes(), load_lobster()
 ├── python/
 │   └── quantflow/
@@ -87,7 +94,7 @@ rust-lob-rl-market-maker/
 ### Rust
 
 ```bash
-# Full Rust test suite (185 tests)
+# Full Rust test suite (214 tests)
 cargo test -p quantflow-core
 
 # Release build
@@ -108,6 +115,22 @@ cargo run -p quantflow-core --example as_grid_search --release
 
 # Criterion benchmarks
 cargo bench --bench orderbook_bench -p quantflow-core
+```
+
+### Binance data pipeline
+
+```bash
+# Step 1 — record live Binance Futures streams to Parquet (depth@100ms, aggTrade, bookTicker)
+cargo run -p quantflow-core --example record_btcusdt --release -- \
+  --duration 3600 --output data/btcusdt/raw --symbol btcusdt --futures
+
+# Step 2 — normalise raw Parquet to unified MarketEvent format + LOB snapshots
+cargo run -p quantflow-core --example normalize_btcusdt --release -- \
+  --input data/btcusdt/raw --output data/btcusdt/processed --date 2026-04-02
+
+# Step 3 — replay events through the LOB engine and inspect statistics
+cargo run -p quantflow-core --example replay_btcusdt --release -- \
+  --input data/btcusdt/processed/2026-04-02_events.parquet
 ```
 
 ### Python (PyO3 extension + training)
@@ -654,6 +677,7 @@ The `quantflow-ffi` crate compiles to a Python extension module (`quantflow.so`)
 | `PyOrderBook` | class | Live order book: `add_limit_order`, `cancel_order`, `best_bid/ask`, `snapshot(n)` → `pa.RecordBatch` |
 | `PyHawkesSimulator` | class | Simulator: `reset(seed)`, `step()`, `place_limit_order`, `cancel_agent_order`, `get_book()`, `mid_price()` |
 | `PyAvellanedaStoikov` | class | AS strategy: `compute_quotes(mid, inventory, t)`, `sigma`, `gamma`, `kappa` properties |
+| `PyReplayEngine` | class | Historical playback: `next_event()`, `step_n(n)`, `snapshot(levels)`, `reset()`, `progress()`, `remaining()` |
 | `calibrate_hawkes(events, d)` | function | Fit exponential Hawkes to a list of `{time, event_type}` dicts; returns μ, α, β, NLL |
 | `load_lobster(msg_path, book_path)` | function | Parse LOBSTER CSV files; returns `{messages, snapshots}` as Arrow RecordBatches |
 
@@ -997,7 +1021,7 @@ cargo test -p quantflow-core
 uv run pytest tests/ -v
 ```
 
-**Rust (185 tests)**
+**Rust (214 tests)**
 
 | Module | Tests | Coverage |
 |---|---|---|
@@ -1006,6 +1030,11 @@ uv run pytest tests/ -v
 | `orderbook::matching` | 23 | All order types, FIFO priority, partial maker retention, IOC/FOK |
 | `data::lobster` | 8 | Row parsing, error paths, replayer state machine |
 | `data::arrow_export` | 10 | Schema, row counts, value extraction, Parquet round-trip |
+| `data::binance` | 8 | Serde deserialisation, parsed_bids/asks, is_buy, ws_url spot/futures |
+| `data::market_event` | 4 | hawkes_dim roundtrip, out-of-range None, batch schema, Parquet round-trip |
+| `data::normalizer` | 6 | Trade mapping, depth diffing, best/deep classification, cancel detection |
+| `data::replay` | 7 | from_parquet, cursor advance, apply_event, mid_price, snapshot |
+| `data::recorder` | 3 | File creation, message counting, Parquet readability |
 | `hawkes::kernel` | 29 | Kernel evaluate/integral closed forms, branching ratio, stability |
 | `hawkes::process` | 22 | Constructor validation, intensity, log-likelihood, simulation rate |
 | `hawkes::calibration` | 16 | Gradient correctness, convergence, KS test, goodness-of-fit |
@@ -1074,7 +1103,13 @@ uv run pytest tests/ -v
 - [x] SAC training hardening: linear LR decay 3e-4 → 5e-5, delayed target updates, 20 eval episodes with fixed seeds
 - [x] Domain Randomization: Hawkes param perturbation at episode reset, stability clamping
 - [x] Curriculum Learning: 3-stage easy/medium/hard, auto-advance on rolling reward threshold
-- [ ] Calibrate Hawkes parameters to real LOBSTER data; retrain on calibrated simulator
+- [x] Binance Futures WebSocket client — combined stream (depth@100ms / aggTrade / bookTicker)
+- [x] ParquetRecorder — BatchBuffer flushing to Arrow Parquet (depth, trades, tickers)
+- [x] Unified MarketEvent format — 12-type taxonomy aligned with Hawkes dimensions
+- [x] BinanceNormalizer — depth-snapshot diffing → Limit/Cancel events, aggTrade → Market events
+- [x] ReplayEngine — Parquet playback through OrderBook with FIFO quantity reduction
+- [x] PyReplayEngine FFI — historical replay accessible from Python
+- [ ] Calibrate Hawkes parameters to real Binance data; retrain on calibrated simulator
 - [ ] PPO comparison vs SAC
 - [ ] Multi-asset extension (correlated LOBs)
 

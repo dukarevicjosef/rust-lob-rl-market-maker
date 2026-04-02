@@ -129,7 +129,7 @@ export function useSimulation() {
       ws = new WebSocket(WS_URL);
       wsRef.current = ws;
 
-      ws.onopen  = () => setState((s) => ({ ...s, isConnected: true }));
+      ws.onopen  = () => setState(() => ({ ...INITIAL, isConnected: true }));
       ws.onclose = () => {
         setState((s) => ({ ...s, isConnected: false, isRunning: false }));
         // Reconnect after 2s

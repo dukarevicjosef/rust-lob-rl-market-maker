@@ -24,6 +24,7 @@ interface ControlBarProps {
   eventsProcessed: number;
   elapsedTime:     number;
   replayProgress:  number;
+  lastError:       string | null;
   onStart:         (cfg: SimConfig) => void;
   onStop:          () => void;
   onPause:         () => void;
@@ -34,7 +35,7 @@ interface ControlBarProps {
 
 export default function ControlBar({
   isConnected, isRunning, isPaused,
-  eventsProcessed, elapsedTime, replayProgress,
+  eventsProcessed, elapsedTime, replayProgress, lastError,
   onStart, onStop, onPause, onResume, onSpeedChange, onReset,
 }: ControlBarProps) {
   const [seed,        setSeed]        = useState(42);
@@ -274,6 +275,13 @@ export default function ControlBar({
           </span>
         </div>
       </div>
+
+      {/* Error banner */}
+      {lastError && (
+        <div className="px-3 py-1 bg-[#ff3b3b]/10 border-b border-[#ff3b3b]/30 font-mono text-[0.6rem] text-[#ff3b3b] truncate">
+          ERR {lastError}
+        </div>
+      )}
 
       {/* Replay progress bar — 2px strip at the bottom of the control bar */}
       {mode === "replay" && replayProgress > 0 && (

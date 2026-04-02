@@ -40,6 +40,7 @@ export default function LivePage() {
         eventsProcessed={sim.eventsProcessed}
         elapsedTime={sim.elapsedTime}
         replayProgress={sim.replayProgress}
+        lastError={sim.lastError}
         onStart={sim.start}
         onStop={sim.stop}
         onPause={sim.pause}

@@ -83,6 +83,7 @@ interface SimState {
   elapsedTime:     number;
   mode:            "simulate" | "replay";
   replayProgress:  number;
+  lastError:       string | null;
 }
 
 const INITIAL: SimState = {
@@ -98,6 +99,7 @@ const INITIAL: SimState = {
   elapsedTime:     0,
   mode:            "simulate",
   replayProgress:  0,
+  lastError:       null,
 };
 
 const MAX_PRICE_PTS  = 500;
@@ -144,7 +146,12 @@ export function useSimulation() {
 
       ws.onmessage = (ev) => {
         try {
-          const tick: TickData = JSON.parse(ev.data as string);
+          const msg = JSON.parse(ev.data as string) as { type: string; message?: string } & TickData;
+          if (msg.type === "error") {
+            setState((s) => ({ ...s, isRunning: false, isPaused: false, lastError: msg.message ?? "Unknown error" }));
+            return;
+          }
+          const tick = msg as TickData;
           if (tick.type !== "tick") return;
 
           const now     = Date.now();

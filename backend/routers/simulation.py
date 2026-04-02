@@ -79,24 +79,33 @@ async def list_replay_files() -> list[dict]:
 @router.websocket("/ws/live")
 async def live_ws(ws: WebSocket) -> None:
     await runner.connect(ws)
+    async def send_error(message: str) -> None:
+        try:
+            await ws.send_json({"type": "error", "message": message})
+        except Exception:
+            pass
+
     try:
         async for msg in ws.iter_json():
             action = msg.get("action", "")
             if action == "start":
                 cfg  = msg.get("config", {})
                 mode = str(cfg.get("mode", "simulate"))
-                if mode == "replay":
-                    await runner.start(
-                        mode="replay",
-                        replay_path=str(cfg.get("replay_path", "")),
-                        speed=float(cfg.get("speed", 1.0)),
-                    )
-                else:
-                    await runner.start(
-                        seed=int(cfg.get("seed", 42)),
-                        speed=float(cfg.get("speed", 1.0)),
-                        strategy=str(cfg.get("strategy", "as")),
-                    )
+                try:
+                    if mode == "replay":
+                        await runner.start(
+                            mode="replay",
+                            replay_path=str(cfg.get("replay_path", "")),
+                            speed=float(cfg.get("speed", 1.0)),
+                        )
+                    else:
+                        await runner.start(
+                            seed=int(cfg.get("seed", 42)),
+                            speed=float(cfg.get("speed", 1.0)),
+                            strategy=str(cfg.get("strategy", "as")),
+                        )
+                except Exception as exc:
+                    await send_error(str(exc))
             elif action == "stop":
                 runner.stop()
             elif action == "set_speed":

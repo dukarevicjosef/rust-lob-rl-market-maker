@@ -9,6 +9,7 @@ interface TradeFeedProps {
 }
 
 function fmtTime(simTime: number): string {
+  if (!simTime || !isFinite(simTime)) return "—";
   if (simTime > 86400) {
     return new Date(simTime * 1000).toISOString().slice(11, 19);
   }
@@ -18,10 +19,12 @@ function fmtTime(simTime: number): string {
 }
 
 function fmtPrice(price: number): string {
+  if (!price || !isFinite(price)) return "—";
   return price >= 1000 ? price.toFixed(2) : price.toFixed(4);
 }
 
 function fmtQty(qty: number, isReplay: boolean): string {
+  if (!qty || !isFinite(qty)) return "—";
   if (isReplay) return qty.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
   return String(qty);
 }

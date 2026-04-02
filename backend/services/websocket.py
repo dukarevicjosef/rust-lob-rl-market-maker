@@ -50,6 +50,8 @@ class SimState:
             self.sim    = None
             self.strat  = None
             self._sac   = None
+            self._last_valid_mid: float | None = None
+            self._ema_mid:        float | None = None
         else:
             self.replay = None
             self.seed     = seed
@@ -115,11 +117,43 @@ class SimState:
         if not events:
             return None
 
-        mid = self.replay.mid_price()
-        if mid is None:
-            return None
+        # Build raw LOB snapshot first so we can derive mid from best bid/ask
+        # rather than from replay.mid_price() which can include stale/crossed levels.
+        raw_lob = self._replay_lob_snapshot()
+        best_bid = raw_lob["bids"][0]["price"] if raw_lob["bids"] else None
+        best_ask = raw_lob["asks"][0]["price"] if raw_lob["asks"] else None
 
-        lob = self._replay_lob_snapshot()
+        if best_bid is not None and best_ask is not None:
+            mid: float | None = (best_bid + best_ask) / 2
+        elif best_bid is not None:
+            mid = best_bid
+        elif best_ask is not None:
+            mid = best_ask
+        else:
+            mid = self.replay.mid_price()  # last resort
+
+        if mid is None:
+            if self._last_valid_mid is None:
+                return None
+            mid = self._last_valid_mid
+
+        # EMA-smoothed spike filter: reject mid values deviating >0.1% from the EMA.
+        # 0.1% at $66K = $66 — no legitimate 100ms tick crosses this on BTCUSDT.
+        if self._ema_mid is None:
+            self._ema_mid = mid
+        else:
+            self._ema_mid = 0.99 * self._ema_mid + 0.01 * mid
+            if abs(mid - self._ema_mid) / self._ema_mid > 0.001:
+                mid = self._ema_mid
+        self._last_valid_mid = mid
+
+        # Filter LOB levels to ±0.05% of validated mid — show only near-touch depth.
+        # At $66K this is ±$33; far-out stale levels cause phantom Y-axis range.
+        half_pct = mid * 0.0005
+        lob = {
+            "bids": [l for l in raw_lob["bids"] if abs(l["price"] - mid) <= half_pct],
+            "asks": [l for l in raw_lob["asks"] if abs(l["price"] - mid) <= half_pct],
+        }
 
         trades: list[dict] = []
         for e in events:
@@ -131,8 +165,8 @@ class SimState:
                     "is_agent": False,
                 })
 
-        best_bid = lob["bids"][0]["price"] if lob["bids"] else round(mid - _TICK_SIZE, 4)
-        best_ask = lob["asks"][0]["price"] if lob["asks"] else round(mid + _TICK_SIZE, 4)
+        bb = lob["bids"][0]["price"] if lob["bids"] else round(mid - _TICK_SIZE, 4)
+        ba = lob["asks"][0]["price"] if lob["asks"] else round(mid + _TICK_SIZE, 4)
 
         if events:
             self.t = events[-1]["timestamp"]
@@ -141,9 +175,9 @@ class SimState:
             "type":      "tick",
             "timestamp": round(self.t, 3),
             "mid_price": round(mid, 4),
-            "spread":    round(best_ask - best_bid, 4),
-            "best_bid":  round(best_bid, 4),
-            "best_ask":  round(best_ask, 4),
+            "spread":    round(ba - bb, 4),
+            "best_bid":  round(bb, 4),
+            "best_ask":  round(ba, 4),
             "lob":       lob,
             "agent": {
                 "inventory":      0,

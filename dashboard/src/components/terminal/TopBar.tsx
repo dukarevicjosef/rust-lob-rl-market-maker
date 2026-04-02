@@ -1,9 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import { simInfoStore } from "@/lib/sim-info-store";
 
 export default function TopBar() {
   const [now, setNow] = useState("");
+  const simInfo = useSyncExternalStore(
+    simInfoStore.subscribe,
+    simInfoStore.get,
+    simInfoStore.get,
+  );
 
   useEffect(() => {
     const fmt = () => {
@@ -17,6 +23,12 @@ export default function TopBar() {
     return () => clearInterval(id);
   }, []);
 
+  const fmtEvents = (n: number) => {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000)     return `${Math.round(n / 1_000)}K`;
+    return String(n);
+  };
+
   return (
     <div className="flex items-center h-7 bg-[#111111] border-b border-[#1e1e1e] px-3 shrink-0 select-none">
       {/* Logo */}
@@ -24,18 +36,38 @@ export default function TopBar() {
         QUANTFLOW
       </span>
 
-      {/* Sim info */}
+      {/* Sim info — switches based on active mode */}
       <span className="text-[0.65rem] text-[#666666] tracking-wide flex-1">
-        SIM:{" "}
-        <span className="text-[#cccccc]">HAWKES‑12D</span>
-        {"  "}|{"  "}
-        σ={" "}
-        <span className="text-[#cccccc]">0.061</span>
-        {"  "}|{"  "}
-        SEED{" "}
-        <span className="text-[#cccccc]">42</span>
-        {"  "}|{"  "}
-        <span className="text-[#cccccc]">82K EVENTS</span>
+        {simInfo.mode === "replay" ? (
+          <>
+            <span className="text-[#0055cc] font-bold">REPLAY</span>
+            {"  "}:{" "}
+            <span className="text-[#cccccc]">BTCUSDT</span>
+            {"  "}|{"  "}
+            {simInfo.replayDate && (
+              <>
+                <span className="text-[#cccccc]">{simInfo.replayDate}</span>
+                {"  "}|{"  "}
+              </>
+            )}
+            {simInfo.replayEvents != null && (
+              <span className="text-[#cccccc]">{fmtEvents(simInfo.replayEvents)} EVENTS</span>
+            )}
+          </>
+        ) : (
+          <>
+            SIM:{" "}
+            <span className="text-[#cccccc]">HAWKES‑12D</span>
+            {"  "}|{"  "}
+            σ={" "}
+            <span className="text-[#cccccc]">0.061</span>
+            {"  "}|{"  "}
+            SEED{" "}
+            <span className="text-[#cccccc]">42</span>
+            {"  "}|{"  "}
+            <span className="text-[#cccccc]">82K EVENTS</span>
+          </>
+        )}
       </span>
 
       {/* Timestamp + connection */}

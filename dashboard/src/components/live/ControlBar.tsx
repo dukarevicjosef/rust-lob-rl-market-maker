@@ -62,7 +62,12 @@ export default function ControlBar({
 
   const handleStart = () => {
     if (mode === "replay") {
-      onStart({ seed, speed, strategy, mode: "replay", replayPath });
+      const fileInfo = replayFiles.find((f) => f.path === replayPath);
+      onStart({
+        seed, speed, strategy, mode: "replay", replayPath,
+        replayDate:   fileInfo?.date,
+        replayEvents: fileInfo?.events,
+      });
     } else {
       onStart({ seed, speed, strategy, mode: "simulate" });
     }
@@ -262,11 +267,6 @@ export default function ControlBar({
 
         {/* Live counters */}
         <div className="flex items-center gap-4 shrink-0 font-mono text-[0.6rem]">
-          {mode === "replay" && replayProgress > 0 && (
-            <span className="text-[#444]">
-              PROG <span className="text-[#0088ff]">{(replayProgress * 100).toFixed(1)}%</span>
-            </span>
-          )}
           <span className="text-[#444]">
             EVT <span className="text-[#cccccc]">{eventsProcessed.toLocaleString()}</span>
           </span>
@@ -283,13 +283,18 @@ export default function ControlBar({
         </div>
       )}
 
-      {/* Replay progress bar — 2px strip at the bottom of the control bar */}
-      {mode === "replay" && replayProgress > 0 && (
-        <div className="h-[2px] w-full bg-[#111]">
-          <div
-            className="h-full bg-[#0055cc] transition-all duration-300"
-            style={{ width: `${replayProgress * 100}%` }}
-          />
+      {/* Replay progress bar — full-width strip with percentage label */}
+      {mode === "replay" && (
+        <div className="flex items-center gap-2 px-3 h-[18px] bg-[#080808] border-b border-[#1e1e1e]">
+          <div className="flex-1 h-1 bg-[#1a1a1a] rounded-none overflow-hidden">
+            <div
+              className="h-full bg-[#0055cc] transition-all duration-150"
+              style={{ width: `${replayProgress * 100}%` }}
+            />
+          </div>
+          <span className="font-mono text-[0.55rem] text-[#0088ff] w-10 text-right shrink-0">
+            {(replayProgress * 100).toFixed(1)}%
+          </span>
         </div>
       )}
     </div>

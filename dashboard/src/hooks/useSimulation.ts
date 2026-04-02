@@ -63,11 +63,13 @@ export interface MidPoint {
 }
 
 export interface SimConfig {
-  seed:        number;
-  speed:       number;
-  strategy:    string;
-  mode:        "simulate" | "replay";
-  replayPath?: string;
+  seed:           number;
+  speed:          number;
+  strategy:       string;
+  mode:           "simulate" | "replay";
+  replayPath?:    string;
+  replayDate?:    string;
+  replayEvents?:  number;
 }
 
 interface SimState {
@@ -83,6 +85,8 @@ interface SimState {
   elapsedTime:     number;
   mode:            "simulate" | "replay";
   replayProgress:  number;
+  replayDate?:     string;
+  replayEvents?:   number;
   lastError:       string | null;
 }
 
@@ -240,6 +244,8 @@ export function useSimulation() {
         isPaused:       false,
         mode:           cfg.mode,
         replayProgress: cfg.mode === "replay" ? 0 : s.replayProgress,
+        replayDate:     cfg.replayDate,
+        replayEvents:   cfg.replayEvents,
       }));
     },
     [send],

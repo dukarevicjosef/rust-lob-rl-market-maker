@@ -147,9 +147,18 @@ class SimState:
         # Filter LOB levels to ±1% of validated mid — keeps near-touch BTC depth.
         # At $66K this is ±$660; catches real top-of-book while rejecting stale crash-era levels.
         half_pct = mid * 0.01
+        # Enforce correct side: bids must be ≤ mid, asks ≥ mid.
+        # Crossed/stale levels (e.g. pre-crash bids still above current mid) cause
+        # all bars to render as the same color in the depth chart.
         lob = {
-            "bids": [l for l in raw_lob["bids"] if abs(l["price"] - mid) <= half_pct],
-            "asks": [l for l in raw_lob["asks"] if abs(l["price"] - mid) <= half_pct],
+            "bids": sorted(
+                [l for l in raw_lob["bids"] if l["price"] <= mid and abs(l["price"] - mid) <= half_pct],
+                key=lambda l: l["price"], reverse=True,
+            ),
+            "asks": sorted(
+                [l for l in raw_lob["asks"] if l["price"] >= mid and abs(l["price"] - mid) <= half_pct],
+                key=lambda l: l["price"],
+            ),
         }
 
         trades: list[dict] = []

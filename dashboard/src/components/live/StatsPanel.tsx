@@ -145,7 +145,7 @@ export default function StatsPanel({ agent, priceHistory, INV_LIMIT = INV_MAX }:
         <div className="border border-[#1e1e1e] bg-[#0d0d0d] p-2">
           <div className="text-[#444] uppercase tracking-widest mb-0.5">HALF SPREAD</div>
           <div className="text-base font-bold text-[#ff8c00]">
-            {agent?.bid_quote !== undefined && agent?.ask_quote !== undefined
+            {agent?.bid_quote != null && agent?.ask_quote != null
               ? (((agent.ask_quote - agent.bid_quote) / 2 / agent.ask_quote) * 10000).toFixed(1) + " bp"
               : "—"}
           </div>

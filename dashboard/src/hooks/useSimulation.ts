@@ -14,8 +14,8 @@ export interface AgentState {
   inventory:      number;
   pnl:            number;
   unrealized_pnl: number;
-  bid_quote:      number;
-  ask_quote:      number;
+  bid_quote:      number | null;
+  ask_quote:      number | null;
   gamma:          number;
   kappa_offset:   number;
   fills_total:    number;
@@ -154,14 +154,14 @@ export function useSimulation() {
           const newPt: PricePoint = {
             time: now,
             mid:  tick.mid_price,
-            bid:  tick.agent.bid_quote,
-            ask:  tick.agent.ask_quote,
+            bid:  tick.agent.bid_quote ?? tick.mid_price,
+            ask:  tick.agent.ask_quote ?? tick.mid_price,
           };
           const newMid: MidPoint = {
             sim_time: simTime,
             mid:      tick.mid_price,
-            bid:      tick.agent.bid_quote,
-            ask:      tick.agent.ask_quote,
+            bid:      tick.agent.bid_quote ?? tick.mid_price,
+            ask:      tick.agent.ask_quote ?? tick.mid_price,
           };
           const newTrades: TradeRecord[] = tick.trades.map((t) => ({
             ...t,

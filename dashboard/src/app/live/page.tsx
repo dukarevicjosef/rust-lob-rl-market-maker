@@ -16,14 +16,14 @@ export default function LivePage() {
 
   const bids = sim.lob?.bids ?? [];
   const asks = sim.lob?.asks ?? [];
-  const mid  = sim.agent?.bid_quote !== undefined && sim.agent?.ask_quote !== undefined
+  const mid  = sim.agent?.bid_quote != null && sim.agent?.ask_quote != null
     ? (sim.agent.bid_quote + sim.agent.ask_quote) / 2
     : sim.priceHistory[sim.priceHistory.length - 1]?.mid ?? 100;
 
-  const spread = sim.agent
+  const spread = sim.agent?.bid_quote != null && sim.agent?.ask_quote != null
     ? (sim.agent.ask_quote - sim.agent.bid_quote).toFixed(4)
-    : "—";
-  const priceSubtitle = sim.agent
+    : null;
+  const priceSubtitle = sim.agent?.bid_quote != null && sim.agent?.ask_quote != null
     ? `BID ${sim.agent.bid_quote.toFixed(3)} / ASK ${sim.agent.ask_quote.toFixed(3)} | SPREAD ${spread}`
     : "AWAITING DATA";
 
@@ -64,8 +64,8 @@ export default function LivePage() {
                 bids={bids}
                 asks={asks}
                 midPrice={mid}
-                agentBid={sim.agent?.bid_quote}
-                agentAsk={sim.agent?.ask_quote}
+                agentBid={sim.agent?.bid_quote ?? undefined}
+                agentAsk={sim.agent?.ask_quote ?? undefined}
               />
             </div>
           </Panel>

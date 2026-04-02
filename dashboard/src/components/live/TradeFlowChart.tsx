@@ -52,7 +52,10 @@ export default function TradeFlowChart({
     const prices: number[] = [];
     for (const t of trades)     if (t.sim_time >= minT) prices.push(t.price);
     for (const m of midHistory) if (m.sim_time >= minT) prices.push(m.mid);
-    if (agent) { prices.push(agent.bid_quote, agent.ask_quote); }
+    if (agent) {
+      if (agent.bid_quote != null) prices.push(agent.bid_quote);
+      if (agent.ask_quote != null) prices.push(agent.ask_quote);
+    }
 
     let minP = Math.min(...prices);
     let maxP = Math.max(...prices);
@@ -166,8 +169,8 @@ export default function TradeFlowChart({
         ctx.textAlign = "left";
         ctx.fillText(`${label} ${price.toFixed(3)}`, PAD_L + 4, y - 3);
       };
-      drawQuote(agent.bid_quote, "rgba(0, 210, 106, 0.75)", "BID");
-      drawQuote(agent.ask_quote, "rgba(255, 59, 59, 0.75)",  "ASK");
+      if (agent.bid_quote != null) drawQuote(agent.bid_quote, "rgba(0, 210, 106, 0.75)", "BID");
+      if (agent.ask_quote != null) drawQuote(agent.ask_quote, "rgba(255, 59, 59, 0.75)",  "ASK");
     }
 
     // ── Axis border ───────────────────────────────────────────────────────────

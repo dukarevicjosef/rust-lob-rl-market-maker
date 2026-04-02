@@ -78,9 +78,9 @@ class SimState:
         self.last_quote_t: float  = -_QUOTE_INTERVAL
         self.t:          float    = 0.0
 
-        # Last quote prices used for display (set by _refresh_quotes).
-        self._last_bid_q:      float = 0.0
-        self._last_ask_q:      float = 0.0
+        # Actual placed order prices for display (None = no resting order).
+        self._last_bid_q:      float | None = None
+        self._last_ask_q:      float | None = None
         # SAC-derived parameters for display.
         self._last_gamma:      float = self.strat.gamma
         self._last_kappa_off:  float = 0.0
@@ -174,13 +174,15 @@ class SimState:
         if mid is None:
             return
 
-        # Cancel existing resting orders.
+        # Cancel existing resting orders and clear stored display prices.
         if self.bid_id is not None:
             self.sim.cancel_agent_order(self.bid_id)
-            self.bid_id = None
+            self.bid_id    = None
+            self._last_bid_q = None
         if self.ask_id is not None:
             self.sim.cancel_agent_order(self.ask_id)
-            self.ask_id = None
+            self.ask_id    = None
+            self._last_ask_q = None
 
         book     = self.sim.get_book()
         best_bid = book.best_bid()
@@ -270,18 +272,12 @@ class SimState:
     # ── Tick assembly ─────────────────────────────────────────────────────────
 
     def _build_tick(self, mid: float) -> dict[str, Any]:
-        # Compute display quotes from the AS strategy (with current gamma/kappa,
-        # which for SAC were already updated by _refresh_quotes).
-        (bid_q, ask_q), skew_m = self.strat.compute_quotes_skewed(
-            mid, self.inventory, self.t
-        )
-        # Prefer the actual placed prices when available (they may differ due to
-        # book-cross clamping), but fall back to formula values when no quotes placed.
-        if self._last_bid_q > 0:
-            bid_q = self._last_bid_q
-        if self._last_ask_q > 0:
-            ask_q = self._last_ask_q
+        # Use actual placed order prices; None when no resting order exists.
+        bid_q = self._last_bid_q
+        ask_q = self._last_ask_q
 
+        # skew_mode is purely for display — compute from current strat params.
+        _, skew_m = self.strat.compute_quotes_skewed(mid, self.inventory, self.t)
         inv_ratio = abs(self.inventory) / _INV_LIMIT
         if inv_ratio >= 1.0:
             skew_m = "dump"
@@ -290,7 +286,10 @@ class SimState:
 
         pnl        = round(self.cash + self.inventory * mid, 2)
         unrealized = round(
-            self.inventory * (mid - ask_q if self.inventory > 0 else bid_q), 2
+            self.inventory * (mid - ask_q if (self.inventory > 0 and ask_q is not None)
+                              else (bid_q - mid) if (self.inventory < 0 and bid_q is not None)
+                              else 0.0),
+            2,
         )
 
         self._pnl_hist.append(pnl)
@@ -315,7 +314,7 @@ class SimState:
             "type":      "tick",
             "timestamp": round(self.t, 3),
             "mid_price": round(mid, 4),
-            "spread":    round(ask_q - bid_q, 4),
+            "spread":    round(ask_q - bid_q, 4) if (ask_q is not None and bid_q is not None) else None,
             "best_bid":  best_bid_p,
             "best_ask":  best_ask_p,
             "lob":       lob,
@@ -323,8 +322,8 @@ class SimState:
                 "inventory":      self.inventory,
                 "pnl":            pnl,
                 "unrealized_pnl": unrealized,
-                "bid_quote":      round(bid_q, 4),
-                "ask_quote":      round(ask_q, 4),
+                "bid_quote":      round(bid_q, 4) if bid_q is not None else None,
+                "ask_quote":      round(ask_q, 4) if ask_q is not None else None,
                 "gamma":          round(self._last_gamma, 3),
                 "kappa_offset":   round(self._last_kappa_off, 4),
                 "fills_total":    self.fills,

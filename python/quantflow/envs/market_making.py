@@ -124,7 +124,44 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "reward_clip":        10.0,   # clip range for normalized reward
     # Seed
     "seed":               42,
+    # Calibrated Hawkes parameters (Phase C)
+    "hawkes_params_path": None,   # path to hawkes_params.json; None = default params
 }
+
+
+# ── Calibrated Hawkes param loader ────────────────────────────────────────────
+
+def _load_hawkes_params(
+    cal: dict,
+) -> tuple[list[float], list[list[float]], list[list[float]]]:
+    """
+    Convert a CalibrationResult JSON dict into (mu, alpha_rust, beta_rust)
+    arrays suitable for ``PyHawkesSimulator.new()``.
+
+    The Python MLE parameterises φ(t) = α_py·exp(−β_py·t), so ∫φ = α_py/β_py.
+    The Rust kernel uses φ(t) = n*·β·exp(−β·t), so n* = α_py/β_py.
+    We therefore pass ``alpha_rust[i][j] = alpha_py[i][j] / beta_py[i][j]``
+    and ``beta_rust[i][j] = beta_py[i][j]``.
+
+    Dims absent from ``dim_params`` (e.g. Modify Buy/Sell with 0 events)
+    receive a near-zero baseline and no excitation.
+    """
+    D     = 12
+    mu    = [1e-3] * D                          # near-zero for uncalibrated dims
+    alpha = [[0.0] * D for _ in range(D)]       # Rust n*_ij
+    beta  = [[1.0] * D for _ in range(D)]       # decay rate
+
+    for p in cal.get("dim_params", []):
+        i      = int(p["dim"])
+        mu[i]  = float(p["mu"])
+        ap: list[float] = p["alpha"]            # length D
+        bp: list[float] = p["beta"]             # length D
+        for j in range(D):
+            if bp[j] > 0.0:
+                alpha[i][j] = ap[j] / bp[j]    # convert to Rust n* convention
+                beta[i][j]  = bp[j]
+
+    return mu, alpha, beta
 
 
 # ── Environment ────────────────────────────────────────────────────────────────
@@ -214,11 +251,21 @@ class MarketMakingEnv(gym.Env):
             high = np.array([1.00,  0.5], dtype=np.float32),
         )
 
-        # Simulator
-        self._sim: quantflow.HawkesSimulator = quantflow.HawkesSimulator.new({
+        # Simulator — optionally loaded from calibrated Hawkes parameters.
+        sim_config: dict[str, Any] = {
             "t_max":             self.t_max,
             "snapshot_interval": int(cfg["snapshot_interval"]),
-        })
+        }
+        hawkes_path = cfg.get("hawkes_params_path")
+        if hawkes_path:
+            import json
+            with open(hawkes_path) as _f:
+                _cal = json.load(_f)
+            _mu, _alpha, _beta = _load_hawkes_params(_cal)
+            sim_config["hawkes_mu"]    = _mu
+            sim_config["hawkes_alpha"] = _alpha
+            sim_config["hawkes_beta"]  = _beta
+        self._sim: quantflow.HawkesSimulator = quantflow.HawkesSimulator.new(sim_config)
         self._strat: quantflow.AvellanedaStoikov | None = None
 
         # Episode state (initialised in reset)

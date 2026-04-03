@@ -219,12 +219,13 @@ class QuantflowEvalCallback(BaseCallback):
 # ── Training entry point ───────────────────────────────────────────────────────
 
 def train(
-    sac_cfg:    SACConfig,
-    env_config: dict[str, Any] | None = None,
-    run_dir:    Path | str | None     = None,
-    use_wandb:  bool                  = False,
-    wandb_project: str                = "quantflow-mm",
-    wandb_name:    str | None         = None,
+    sac_cfg:           SACConfig,
+    env_config:        dict[str, Any] | None = None,
+    run_dir:           Path | str | None     = None,
+    use_wandb:         bool                  = False,
+    wandb_project:     str                   = "quantflow-mm",
+    wandb_name:        str | None            = None,
+    hawkes_params_path: str | None           = None,
 ) -> SAC:
     """
     Train a SAC market-making agent.
@@ -255,6 +256,8 @@ def train(
     run_dir.mkdir(parents=True, exist_ok=True)
 
     merged_env_cfg = {**_DEFAULT_ENV_CFG, **(env_config or {})}
+    if hawkes_params_path:
+        merged_env_cfg["hawkes_params_path"] = hawkes_params_path
     env = MarketMakingEnv(merged_env_cfg)
 
     model = SAC(
@@ -279,10 +282,16 @@ def train(
     wandb_active = False
     if use_wandb:
         if _WANDB_AVAILABLE:
+            _wandb_tags = ["phase-c", "btcusdt-calibrated"] if hawkes_params_path else []
             _wandb.init(
                 project          = wandb_project,
                 name             = wandb_name,
-                config           = {**sac_cfg.__dict__, **(env_config or {})},
+                config           = {
+                    **sac_cfg.__dict__,
+                    **(env_config or {}),
+                    "hawkes_params_path": hawkes_params_path,
+                },
+                tags             = _wandb_tags,
                 sync_tensorboard = False,   # no TensorBoard dependency
                 save_code        = False,
             )
@@ -334,6 +343,8 @@ def main() -> None:
                    help="Enable Weights & Biases logging")
     p.add_argument("--wandb-project",  type=str,  default="quantflow-mm")
     p.add_argument("--wandb-name",     type=str,  default=None)
+    p.add_argument("--hawkes-params",  type=str,  default=None,
+                   help="Path to hawkes_params.json for calibrated BTC/USDT simulation")
     args = p.parse_args()
 
     cfg = SACConfig(
@@ -341,10 +352,11 @@ def main() -> None:
     )
     train(
         cfg,
-        run_dir       = args.run_dir,
-        use_wandb     = args.wandb,
-        wandb_project = args.wandb_project,
-        wandb_name    = args.wandb_name,
+        run_dir            = args.run_dir,
+        use_wandb          = args.wandb,
+        wandb_project      = args.wandb_project,
+        wandb_name         = args.wandb_name,
+        hawkes_params_path = args.hawkes_params,
     )
 
 

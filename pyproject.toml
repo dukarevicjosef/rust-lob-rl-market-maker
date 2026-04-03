@@ -19,6 +19,7 @@ dependencies = [
     "stable-baselines3>=2.7.1",
     "uvicorn[standard]>=0.42.0",
     "wandb>=0.25.1",
+    "scipy>=1.12",
     "websockets>=16.0",
 ]
 

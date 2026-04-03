@@ -23,7 +23,9 @@ from pathlib import Path
 
 import numpy as np
 
-from .event_classifier import EventClassifier
+import numpy as np
+
+from .event_classifier import EventClassifier, HawkesEventData
 from .hawkes_mle import HawkesMLE, CalibrationResult
 from .goodness_of_fit import HawkesGoodnessOfFit
 
@@ -49,6 +51,150 @@ def _bar(v: float, max_v: float, width: int = 12) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
+# ── npz loader ───────────────────────────────────────────────────────────────
+
+
+def _load_npz(path: Path, min_events: int) -> HawkesEventData:
+    """
+    Load a classified_events.npz produced by the event classifier pipeline.
+
+    Expected keys: times_dim0 … times_dim{N-1}, all_times.
+    Falls back to event_summary.json in the same directory for metadata.
+    """
+    import json as _json
+
+    d      = np.load(path, allow_pickle=True)
+    n_dims = sum(1 for k in d.keys() if k.startswith("times_dim"))
+
+    all_times_list: list[np.ndarray] = [
+        d[f"times_dim{i}"].astype(np.float64) for i in range(n_dims)
+    ]
+
+    # t_span from the merged stream
+    all_t  = d["all_times"].astype(np.float64) if "all_times" in d else np.concatenate(all_times_list)
+    t_start = float(all_t[0])  if len(all_t) > 0 else 0.0
+    t_end   = float(all_t[-1]) if len(all_t) > 0 else 0.0
+    t_span  = t_end - t_start
+
+    # Optionally enrich from sidecar summary
+    summary_path = path.parent / "event_summary.json"
+    dim_stats_raw: list[dict] = []
+    if summary_path.exists():
+        try:
+            s = _json.loads(summary_path.read_text())
+            dim_stats_raw = s.get("dim_stats", [])
+        except Exception:
+            pass
+
+    dim_events: list[dict] = []
+    dim_stats:  list[dict] = []
+    total = 0
+
+    for i in range(n_dims):
+        times = all_times_list[i]
+        inter = np.diff(times) if len(times) > 1 else np.array([], dtype=np.float64)
+        total += len(times)
+
+        if dim_stats_raw and i < len(dim_stats_raw):
+            base = dict(dim_stats_raw[i])
+        else:
+            base = {
+                "dim": i,
+                "name": EventClassifier.DIM_NAMES[i] if i < len(EventClassifier.DIM_NAMES) else f"dim_{i}",
+            }
+
+        base.update({
+            "dim":              i,
+            "name":             base.get("name", f"dim_{i}"),
+            "count":            len(times),
+            "rate_per_sec":     len(times) / t_span if t_span > 0 else 0.0,
+            "pct_of_total":     0.0,
+            "mean_inter_time":  float(np.mean(inter))   if len(inter) > 0 else float("inf"),
+            "median_inter_time":float(np.median(inter)) if len(inter) > 0 else float("inf"),
+            "std_inter_time":   float(np.std(inter))    if len(inter) > 0 else 0.0,
+            "mean_quantity":    0.0,
+            "active":           len(times) >= min_events,
+        })
+
+        dim_events.append({
+            "times":       times,
+            "prices":      np.zeros(len(times), dtype=np.float64),
+            "quantities":  np.zeros(len(times), dtype=np.float64),
+            "inter_times": inter,
+        })
+        dim_stats.append(base)
+
+    for s in dim_stats:
+        s["pct_of_total"] = s["count"] / total * 100 if total > 0 else 0.0
+
+    return HawkesEventData(
+        dim_events=dim_events,
+        dim_stats=dim_stats,
+        t_start=t_start,
+        t_end=t_end,
+        t_span=t_span,
+        total_events=total,
+        source_path=str(path),
+    )
+
+
+# ── data truncation helper ────────────────────────────────────────────────────
+
+
+def _truncate_data(data: HawkesEventData, max_seconds: float) -> HawkesEventData:
+    """
+    Return a copy of HawkesEventData restricted to events in [t_start, t_start + max_seconds].
+    Useful to reduce calibration time on large full-day datasets.
+    """
+    t_cutoff = data.t_start + max_seconds
+    new_dim_events: list[dict] = []
+    new_dim_stats:  list[dict] = []
+    total = 0
+
+    for i in range(data.n_dims):
+        src     = data.dim_events[i]
+        times   = src["times"]
+        prices  = src["prices"]
+        qtys    = src["quantities"]
+
+        mask  = times <= t_cutoff
+        times = times[mask]
+        inter = np.diff(times) if len(times) > 1 else np.array([], dtype=np.float64)
+        total += len(times)
+
+        old = data.dim_stats[i]
+        t_span = max_seconds if max_seconds > 0 else 1.0
+        new_dim_events.append({
+            "times":       times,
+            "prices":      prices[mask],
+            "quantities":  qtys[mask],
+            "inter_times": inter,
+        })
+        new_dim_stats.append({
+            **old,
+            "count":            len(times),
+            "rate_per_sec":     len(times) / t_span,
+            "pct_of_total":     0.0,
+            "mean_inter_time":  float(np.mean(inter))   if len(inter) > 0 else float("inf"),
+            "median_inter_time":float(np.median(inter)) if len(inter) > 0 else float("inf"),
+            "std_inter_time":   float(np.std(inter))    if len(inter) > 0 else 0.0,
+            "active":           len(times) >= 50,
+        })
+
+    for s in new_dim_stats:
+        s["pct_of_total"] = s["count"] / total * 100 if total > 0 else 0.0
+
+    return HawkesEventData(
+        dim_events=new_dim_events,
+        dim_stats=new_dim_stats,
+        t_start=data.t_start,
+        t_end=min(data.t_end, t_cutoff),
+        t_span=min(data.t_span, max_seconds),
+        total_events=total,
+        source_path=data.source_path,
+    )
+
+
 # ── main calibration function ─────────────────────────────────────────────────
 
 
@@ -60,12 +206,19 @@ def run_calibration(
     skip_gof:     bool = False,
     dims:         list[int] | None = None,
     min_events:   int = 100,
+    max_seconds:  float | None = None,
     verbose:      bool = True,
 ) -> CalibrationResult:
     """
     Load events, run MLE calibration, optionally compute GoF, print report.
 
-    Returns the CalibrationResult (also saved to output_path if provided).
+    Parameters
+    ----------
+    max_seconds : float | None
+        Truncate event data to the first max_seconds of the observation window.
+        Useful for large datasets (e.g., use 600.0 for 10 minutes of BTC data).
+        Parameter estimates from a well-behaved 10-minute window are typically
+        as accurate as those from a full day.
     """
     events_path = Path(events_path)
     if not events_path.exists():
@@ -80,8 +233,18 @@ def run_calibration(
         print(f"  Source:   {events_path}")
         print()
 
-    clf  = EventClassifier(min_events_per_dim=min_events)
-    data = clf.load_and_classify(events_path)
+    if events_path.suffix == ".npz":
+        data = _load_npz(events_path, min_events)
+    else:
+        clf  = EventClassifier(min_events_per_dim=min_events)
+        data = clf.load_and_classify(events_path)
+
+    # Truncate to first max_seconds of data for faster calibration on large datasets
+    if max_seconds is not None and data.t_span > max_seconds:
+        data = _truncate_data(data, max_seconds)
+        if verbose:
+            print(f"  [Truncated to first {max_seconds:.0f}s — {data.total_events:,} events]")
+            print()
 
     if verbose:
         data.print_summary()
@@ -259,6 +422,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--min-events", type=int, default=100,
         help="Minimum events per dimension to attempt calibration (default 100).",
     )
+    p.add_argument(
+        "--max-seconds", type=float, default=None,
+        help=(
+            "Truncate input to the first N seconds of the observation window. "
+            "Useful for large datasets (e.g., 600 for 10 minutes of BTC tick data). "
+            "Parameter estimates converge well beyond a few thousand events per dim."
+        ),
+    )
     return p
 
 
@@ -275,6 +446,7 @@ def main() -> None:
             skip_gof=args.skip_gof,
             dims=args.dims,
             min_events=args.min_events,
+            max_seconds=args.max_seconds,
             verbose=True,
         )
     except (FileNotFoundError, ValueError) as exc:

@@ -17,7 +17,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.stats import kstest, expon
 
-from .hawkes_mle import HawkesParams, _merge_events
+from .hawkes_mle import HawkesParams
 
 
 class HawkesGoodnessOfFit:
@@ -53,88 +53,69 @@ class HawkesGoodnessOfFit:
 
         Returns τ_k = Λ(t_k) - Λ(t_{k-1}), shape (n_target - 1,).
         Under the null (correct model), τ_k ~ i.i.d. Exp(1).
+
+        Efficient O(N_target × D) implementation: loops over target events
+        only, using binary search + vectorised numpy for source contributions.
+
+        Compensator integral over [t_{k-1}, t_k]:
+            ΔΛ = μ·dt + Σ_j (α_j/β_j)·R_j·(1 - exp(-β_j·dt))
+                      + Σ_j Σ_{t_{k-1} ≤ s_l^j < t_k} (α_j/β_j)·(1 - exp(-β_j·(t_k-s_l^j)))
+
+        where R_j = Σ_{s < t_{k-1}, dim=j} exp(-β_j·(t_{k-1}-s)).
         """
         if self._rescaled is not None:
             return self._rescaled
 
-        p          = self.params
-        D          = p.n_dims
-        mu         = p.mu
-        alpha      = p.alpha
-        beta       = p.beta
-        T          = self.T
-        all_times  = self.all_times
-        times      = all_times[p.dim]
+        p         = self.params
+        D         = p.n_dims
+        mu        = p.mu
+        alpha     = p.alpha
+        beta      = p.beta
+        all_times = self.all_times
+        times     = all_times[p.dim]   # target events, sorted
 
-        # Merge all events for recursion
-        merged_times, merged_dims = _merge_events(all_times, D)
-
-        if len(times) < 2 or len(merged_times) == 0:
+        n_target = len(times)
+        if n_target < 2:
             self._rescaled = np.array([], dtype=np.float64)
             return self._rescaled
 
-        # Compute the integrated intensity at each target event via recursion.
-        # Λ(t) = μ·t + Σ_j (α_j/β_j)·Σ_{t_j^l < t} (1 - exp(-β_j·(t - t_j^l)))
-        #
-        # Between consecutive events the integral accumulates:
-        #   ΔΛ(t_{k-1}, t_k) = μ·dt + Σ_j α_j · R_j · (1 - exp(-β_j·dt)) / β_j × β_j
-        # which simplifies to:
-        #   ΔΛ = μ·dt + Σ_j (α_j/β_j) · R_j · (1 - exp(-β_j·dt))  ... (Papangelou)
-        #
-        # We track R_j at the moment just before t_k, then compute the integral
-        # up to t_k accounting for the new event that may have arrived.
-
+        # R[j] = exponentially-weighted sum of past source events from dim j,
+        #        evaluated just BEFORE the current target event.
         R          = np.zeros(D)
+        ptrs       = np.zeros(D, dtype=np.int64)
         t_prev     = 0.0
-        cumulative = 0.0    # Λ accumulated up to (not including) the previous event
+        cumulative = 0.0
+        cum_at     = np.empty(n_target)
 
-        # We need cumulative Λ at each target event time
-        # Build sorted target event positions in merged stream
-        target_times_sorted = times  # already sorted (EventClassifier guarantees this)
-        n_target = len(target_times_sorted)
-        cum_at_target = np.empty(n_target)
+        for i in range(n_target):
+            t  = times[i]
+            dt = t - t_prev
 
-        target_idx = 0   # pointer into target_times_sorted
+            # ΔΛ from the existing R (events before t_prev), decayed to [t_prev, t]
+            exp_decay    = np.exp(-beta * dt)
+            delta_lambda = mu * dt + float(np.sum((alpha / beta) * R * (1.0 - exp_decay)))
+            R           *= exp_decay
 
-        n_merged = len(merged_times)
-        k = 0
-        while k < n_merged and target_idx < n_target:
-            t_k   = merged_times[k]
-            dim_k = merged_dims[k]
-            dt    = t_k - t_prev
+            # ΔΛ from new source events in [t_prev, t) and update R
+            for j in range(D):
+                src = all_times[j]
+                hi  = int(np.searchsorted(src, t, side="left"))
+                lo  = int(ptrs[j])
+                if hi > lo:
+                    gaps = t - src[lo:hi]                    # (t - s) for each new source event
+                    exp_gaps = np.exp(-beta[j] * gaps)
+                    # Contribution to Λ: (α_j/β_j)·(1 - exp(-β_j·(t-s))) for each s
+                    delta_lambda += float((alpha[j] / beta[j]) * np.sum(1.0 - exp_gaps))
+                    # Update R[j] with these new events
+                    R[j] += float(np.sum(exp_gaps))
+                ptrs[j] = hi
 
-            # Integrate Λ over [t_prev, t_k]
-            # ΔΛ = μ·dt + Σ_j (α_j/β_j)·R_j·(1 - exp(-β_j·dt))
-            exp_decay = np.exp(-beta * dt)
-            delta_lambda = mu * dt + np.sum((alpha / beta) * R * (1.0 - exp_decay))
-            cumulative  += delta_lambda
-
-            # Update R
-            R *= exp_decay
-            R[dim_k] += 1.0
-
-            # Record cumulative Λ for all target events that occur exactly at t_k
-            while target_idx < n_target and target_times_sorted[target_idx] == t_k:
-                cum_at_target[target_idx] = cumulative
-                target_idx += 1
-
-            t_prev = t_k
-            k += 1
-
-        # Handle any remaining target events (times after the last merged event)
-        while target_idx < n_target:
-            t_k = target_times_sorted[target_idx]
-            dt  = t_k - t_prev
-            exp_decay = np.exp(-beta * dt)
-            delta_lambda = mu * dt + np.sum((alpha / beta) * R * (1.0 - exp_decay))
-            cumulative  += delta_lambda
-            R *= exp_decay
-            cum_at_target[target_idx] = cumulative
-            t_prev = t_k
-            target_idx += 1
+            cumulative    += delta_lambda
+            cum_at[i]      = cumulative
+            t_prev         = t
 
         # Rescaled inter-event times: τ_k = Λ(t_k) - Λ(t_{k-1})
-        self._rescaled = np.diff(cum_at_target)
+        self._rescaled = np.diff(cum_at)
         return self._rescaled
 
     # ── KS test ───────────────────────────────────────────────────────────────

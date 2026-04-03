@@ -286,10 +286,11 @@ class HawkesMLE:
             )
 
             res = minimize(
-                fun=self._neg_log_likelihood,
+                fun=self._neg_ll_and_grad,
                 x0=x0,
                 args=(target_dim, all_times, T),
                 method="L-BFGS-B",
+                jac=True,
                 bounds=bounds,
                 options={"maxiter": self.max_iter, "ftol": 1e-12, "gtol": 1e-8},
             )
@@ -331,73 +332,61 @@ class HawkesMLE:
         """
         Negative log-likelihood for dimension target_dim.
 
-        Uses the recursive formula (Ozaki, 1979):
+        Efficient O(N_target × D) implementation: loops over target events only
+        (not the full merged stream of all dims), using binary search +
+        vectorised numpy for source contributions in each inter-event interval.
 
-            R_j(k) = exp(-β_j · (t_k - t_{k-1})) · (R_j(k-1) + N_j(t_{k-1}^+))
+        R_j(t) = Σ_{s < t, dim=j} exp(-β_j · (t - s))
 
-        where N_j(t_{k-1}^+) = 1 if the previous event belonged to dim j.
+        Updating from t_prev to t_k:
+            R_j *= exp(-β_j · dt)
+            R_j += Σ_{t_prev ≤ s < t_k, dim=j} exp(-β_j · (t_k - s))
 
         Log-likelihood:
-            ℓ = Σ_k log(μ + Σ_j α_j · R_j(k)) - Λ
+            ℓ = Σ_k log(μ + Σ_j α_j · R_j(t_k)) - Λ
 
-        Compensator:
+        Compensator (vectorised):
             Λ = μ·T + Σ_j (α_j/β_j) · Σ_l (1 - exp(-β_j · (T - t_j^l)))
         """
-        D  = self.n_dims
+        D      = self.n_dims
         mu     = x[0]
         alpha  = x[1 : 1 + D]
         beta   = x[1 + D : 1 + 2 * D]
 
-        # Merge all events into a single sorted stream
-        times_target = all_times[target_dim]
-
-        # Build merged event list: (time, source_dim)
-        # We need all events to advance the R_j recursion
-        merged_times, merged_dims = _merge_events(all_times, D)
-
-        n_all = len(merged_times)
-        if n_all == 0:
+        target_times = all_times[target_dim]
+        n_target     = len(target_times)
+        if n_target == 0:
             return np.inf
 
-        # R[j] = current recursive auxiliary variable for each source dim j
-        R = np.zeros(D)
+        # R[j] running sum; ptrs[j] = next unprocessed index in all_times[j]
+        R    = np.zeros(D)
+        ptrs = np.zeros(D, dtype=np.int64)
+        t_prev  = 0.0
+        ll_sum  = 0.0
 
-        ll_sum = 0.0
-        t_prev = 0.0
+        for i in range(n_target):
+            t  = target_times[i]
+            dt = t - t_prev
 
-        target_set = set(np.searchsorted(merged_times, times_target, side="left"))
+            # Decay all running sums over the interval
+            R *= np.exp(-beta * dt)
 
-        # Iterate over merged stream; only accumulate LL at target events
-        target_event_idx = 0      # which target event we're at
-        n_target = len(times_target)
+            # Add contributions from each source dim's events in [t_prev, t)
+            for j in range(D):
+                src = all_times[j]
+                hi  = int(np.searchsorted(src, t, side="left"))
+                lo  = int(ptrs[j])
+                if hi > lo:
+                    R[j] += float(np.sum(np.exp(-beta[j] * (t - src[lo:hi]))))
+                ptrs[j] = hi
 
-        # Build a sorted index of target event positions in merged stream
-        target_positions: set[int] = set()
-        ti = 0
-        for k in range(n_all):
-            if ti < n_target and merged_times[k] == times_target[ti]:
-                target_positions.add(k)
-                ti += 1
+            # Accumulate log-intensity at this target event
+            intensity = mu + float(np.dot(alpha, R))
+            if intensity <= 0.0:
+                return np.inf
+            ll_sum += np.log(intensity)
 
-        for k in range(n_all):
-            t_k   = merged_times[k]
-            dim_k = merged_dims[k]
-            dt    = t_k - t_prev
-
-            # Decay R
-            decay = np.exp(-beta * dt)
-            R *= decay
-
-            # At target dim events: accumulate log-intensity
-            if k in target_positions:
-                intensity = mu + np.dot(alpha, R)
-                if intensity <= 0.0:
-                    return np.inf
-                ll_sum += np.log(intensity)
-
-            # Increment R for source dim of this event
-            R[dim_k] += 1.0
-            t_prev = t_k
+            t_prev = t
 
         # Compensator Λ = μ·T + Σ_j (α_j/β_j) · Σ_l (1 - exp(-β_j·(T-t_j^l)))
         compensator = mu * T
@@ -405,11 +394,110 @@ class HawkesMLE:
             t_j = all_times[j]
             if len(t_j) == 0:
                 continue
-            dt_to_end = T - t_j
-            compensator += (alpha[j] / beta[j]) * np.sum(1.0 - np.exp(-beta[j] * dt_to_end))
+            compensator += (alpha[j] / beta[j]) * float(
+                np.sum(1.0 - np.exp(-beta[j] * (T - t_j)))
+            )
 
-        ll = ll_sum - compensator
-        return -ll
+        return -(ll_sum - compensator)
+
+    def _neg_ll_and_grad(
+        self,
+        x:          np.ndarray,
+        target_dim: int,
+        all_times:  list[np.ndarray],
+        T:          float,
+    ) -> tuple[float, np.ndarray]:
+        """
+        Negative log-likelihood and its analytical gradient, computed jointly
+        to avoid redundant passes over the data.
+
+        Auxiliary variable Q_j(t) = Σ_{s<t, dim=j} (t-s)·exp(-β_j·(t-s))
+        satisfies: ∂R_j/∂β_j = -Q_j   →   ∂λ/∂β_j = -α_j·Q_j
+
+        Q_j recursion (before decaying R):
+            Q_j ← exp(-β_j·dt)·(Q_j + dt·R_j)
+            Q_j += Σ_{new s} (t-s)·exp(-β_j·(t-s))
+
+        Gradient of ℓ = Σ_k log λ(t_k) - Λ:
+            ∂ℓ/∂μ   = Σ_k 1/λ_k  - T
+            ∂ℓ/∂α_j = Σ_k R_j/λ_k - (1/β_j)·Σ_l(1-exp(-β_j·(T-s_l)))
+            ∂ℓ/∂β_j = -α_j·Σ_k Q_j/λ_k
+                       + (α_j/β_j²)·Σ_l(1-exp(-β_j·(T-s_l)))
+                       - (α_j/β_j)·Σ_l(T-s_l)·exp(-β_j·(T-s_l))
+        """
+        D      = self.n_dims
+        mu     = x[0]
+        alpha  = x[1 : 1 + D]
+        beta   = x[1 + D : 1 + 2 * D]
+
+        target_times = all_times[target_dim]
+        n_target     = len(target_times)
+        if n_target == 0:
+            return np.inf, np.zeros(1 + 2 * D)
+
+        R    = np.zeros(D)
+        Q    = np.zeros(D)   # Q_j = Σ_{s<t, dim=j} (t-s)·exp(-β_j·(t-s))
+        ptrs = np.zeros(D, dtype=np.int64)
+        t_prev = 0.0
+
+        ll_sum  = 0.0
+        g_mu    = 0.0
+        g_alpha = np.zeros(D)
+        g_beta  = np.zeros(D)
+
+        for i in range(n_target):
+            t  = target_times[i]
+            dt = t - t_prev
+            exp_b_dt = np.exp(-beta * dt)
+
+            # Update Q before R (Q depends on the pre-decay R)
+            Q  = exp_b_dt * (Q + dt * R)
+            R *= exp_b_dt
+
+            # Add source events in (t_prev, t) to both R and Q
+            for j in range(D):
+                src = all_times[j]
+                hi  = int(np.searchsorted(src, t, side="left"))
+                lo  = int(ptrs[j])
+                if hi > lo:
+                    gaps     = t - src[lo:hi]
+                    exp_gaps = np.exp(-beta[j] * gaps)
+                    R[j]    += float(np.sum(exp_gaps))
+                    Q[j]    += float(np.sum(gaps * exp_gaps))
+                ptrs[j] = hi
+
+            # Intensity and per-event gradient contribution
+            intensity = mu + float(np.dot(alpha, R))
+            if intensity <= 0.0:
+                return np.inf, np.zeros(1 + 2 * D)
+            inv_lam  = 1.0 / intensity
+            ll_sum  += np.log(intensity)
+            g_mu    += inv_lam
+            g_alpha += R * inv_lam
+            g_beta  -= alpha * Q * inv_lam   # ∂log_λ/∂β_j = -α_j·Q_j / λ
+
+            t_prev = t
+
+        # Compensator Λ and its gradient
+        compensator = mu * T
+        for j in range(D):
+            t_j = all_times[j]
+            if len(t_j) == 0:
+                continue
+            gaps_end = T - t_j
+            exp_end  = np.exp(-beta[j] * gaps_end)
+            sum1     = float(np.sum(1.0 - exp_end))           # Σ(1-exp(-β_j·(T-s)))
+            sum2     = float(np.sum(gaps_end * exp_end))      # Σ(T-s)·exp(-β_j·(T-s))
+
+            compensator   += (alpha[j] / beta[j]) * sum1
+            g_alpha[j]    -= sum1 / beta[j]                   # ∂(-Λ)/∂α_j
+            g_beta[j]     += (alpha[j] / beta[j] ** 2) * sum1 - (alpha[j] / beta[j]) * sum2
+
+        g_mu -= T   # ∂(-Λ)/∂μ
+
+        neg_ll   = -(ll_sum - compensator)
+        neg_grad = np.concatenate([[-g_mu], -g_alpha, -g_beta])
+        return neg_ll, neg_grad
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -422,6 +510,7 @@ def _merge_events(
     """
     Merge per-dimension time arrays into a single sorted stream.
     Returns (times, dims) both of shape (N,).
+    Used by HawkesGoodnessOfFit for the compensator integral.
     """
     parts_t: list[np.ndarray] = []
     parts_d: list[np.ndarray] = []

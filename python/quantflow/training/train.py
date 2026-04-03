@@ -53,7 +53,7 @@ class SACConfig:
     # Policy
     policy:        str         = "MultiInputPolicy"  # required for Dict obs
     # SAC hyperparameters
-    buffer_size:   int         = 1_000_000
+    buffer_size:   int         = 300_000
     batch_size:    int         = 256
     tau:           float       = 0.005
     gamma:         float       = 0.99

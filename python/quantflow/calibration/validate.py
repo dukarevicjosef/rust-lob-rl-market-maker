@@ -25,27 +25,46 @@ from .plot_stylized_facts import plot_all
 
 
 def _aggregate_sessions(sessions: list[dict]) -> dict:
-    """Concatenate N sessions into a single aggregate session for stats."""
+    """
+    Concatenate N sessions into a single aggregate session for stats.
+
+    Prices are chained continuously: each session's price series is shifted so
+    that its starting price equals the ending price of the previous session.
+    This prevents artificial return spikes at session boundaries.
+    """
     all_events:  list[tuple[float, int]] = []
     all_mid:     list[np.ndarray]        = []
     all_spreads: list[np.ndarray]        = []
-    t_offset = 0.0
+    t_offset    = 0.0
+    last_price  = None   # ending price of the previous session
 
     for s in sessions:
         t_max_s = s["t_max"]
         for t, d in s["events"]:
             all_events.append((t + t_offset, d))
+
         if len(s["mid_prices"]) > 0:
-            all_mid.append(s["mid_prices"] + np.array([[t_offset, 0.0]]))
+            mp = s["mid_prices"].copy()
+            if last_price is not None:
+                # Shift all prices so this session starts at last_price
+                price_shift = last_price - mp[0, 1]
+                mp[:, 1] += price_shift
+            mp[:, 0] += t_offset
+            all_mid.append(mp)
+            last_price = float(mp[-1, 1])
+
         if len(s["spreads"]) > 0:
-            all_spreads.append(s["spreads"] + np.array([[t_offset, 0.0]]))
+            sp = s["spreads"].copy()
+            sp[:, 0] += t_offset
+            all_spreads.append(sp)
+
         t_offset += t_max_s + 1.0
 
     return {
-        "events":    all_events,
+        "events":     all_events,
         "mid_prices": np.vstack(all_mid)    if all_mid    else np.empty((0, 2)),
-        "spreads":   np.vstack(all_spreads) if all_spreads else np.empty((0, 2)),
-        "t_max":     t_offset,
+        "spreads":    np.vstack(all_spreads) if all_spreads else np.empty((0, 2)),
+        "t_max":      t_offset,
     }
 
 

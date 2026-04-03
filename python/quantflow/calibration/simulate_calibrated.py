@@ -56,10 +56,24 @@ def simulate_from_calibration(
     """
     params = CalibrationResult.load(params_path)
 
-    # Auto-calibrate σ_tick from typical BTC intraday vol:
-    # daily vol ≈ 2 %, ~6 market events/s  →  σ per event ≈ P0·0.02/√(86400·6)
+    # Auto-calibrate σ_tick to match daily vol target given actual market-order rate.
+    #
+    # Observed vol_1s = σ_tick · √(λ_mkt) / P0  (Poisson baseline)
+    # Target: daily_vol = 2 %  →  vol_1s = 0.02/√86400 ≈ 6.8e-5
+    # σ_tick = target_vol_1s · P0 / √(λ_mkt)
+    #
+    # λ_mkt is extracted directly from calibrated baseline rates (dims 0+1).
+    # A factor of 1/√(1.5) ≈ 0.816 corrects for Hawkes overdispersion
+    # (clustering inflates realised vol above the Poisson baseline by ~22-50%).
     if sigma_tick is None:
-        sigma_tick = P0 * 0.02 / np.sqrt(86_400 * 6)
+        mkt_dims = [p for p in params.dim_params if p.dim in (0, 1)]
+        lambda_mkt = sum(
+            p.mu / max(1.0 - p.branching_ratio, 0.05) for p in mkt_dims
+        )
+        if lambda_mkt <= 0:
+            lambda_mkt = 6.0   # fallback
+        target_vol_1s = 0.02 / np.sqrt(86_400)          # 2 % daily → per-second vol
+        sigma_tick    = target_vol_1s * P0 / (np.sqrt(lambda_mkt) * np.sqrt(1.5))
 
     return [
         _simulate_session(params, t_max, seed_base + i, P0, sigma_tick, spread_init)

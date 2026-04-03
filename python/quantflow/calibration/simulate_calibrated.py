@@ -156,8 +156,8 @@ def _simulate_session(
                 # New limit quote at best: spread narrows slightly
                 half_spread = max(half_spread * rng.uniform(0.92, 1.0), 0.5)
             else:
-                # Cancel / deep events: spread widens slightly
-                half_spread = half_spread * rng.uniform(1.0, 1.015)
+                # Cancel / deep events: spread widens slightly, cap at 10× initial
+                half_spread = min(half_spread * rng.uniform(1.0, 1.015), spread_init * 5.0)
 
             mid_recs.append((t_new, mid))
             spread_recs.append((t_new, 2.0 * half_spread))

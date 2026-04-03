@@ -218,7 +218,7 @@ class StylizedFacts:
         if spreads is None or len(spreads) < 2:
             return {}
         s = spreads[:, 1]
-        s = s[s > 0]
+        s = s[np.isfinite(s) & (s > 0)]
         if len(s) < 2:
             return {}
         hist, edges = np.histogram(s, bins=n_bins, density=True)
@@ -276,6 +276,8 @@ class StylizedFacts:
                 continue
             # Annualised realised vol (per-second scaling)
             rv = float(np.sqrt(np.sum(log_ret ** 2) / (len(log_ret) * dt)))
+            if not np.isfinite(rv):
+                rv = float("nan")
             rvols.append(rv)
         return {"dt": dt_values, "realized_vol": rvols}
 

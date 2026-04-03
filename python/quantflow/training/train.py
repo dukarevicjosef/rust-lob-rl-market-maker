@@ -73,7 +73,8 @@ class SACConfig:
 
 # Default environment config — reward v2 tuned parameters
 _DEFAULT_ENV_CFG: dict[str, Any] = {
-    "episode_length": 1_000,   # ~150s per episode at ~0.15s/step; enables frequent logging
+    "episode_length":  1_000,   # ~150s per episode at ~0.15s/step; enables frequent logging
+    "warm_up_events":  200,     # reduced from 1000; 200 events sufficient to fill the book
     "reward_config": {
         "phi":                 0.01,
         "psi":                 0.001,
@@ -91,7 +92,7 @@ _DEFAULT_ENV_CFG: dict[str, Any] = {
 _EVAL_ENV_CFG: dict[str, Any] = {
     "episode_length":   500,
     "events_per_step":  50,
-    "warm_up_events":   500,
+    "warm_up_events":   200,
     "normalize_reward": False,
 }
 
@@ -261,6 +262,13 @@ def train(
         merged_env_cfg["hawkes_params_path"] = hawkes_params_path
     env = MarketMakingEnv(merged_env_cfg)
 
+    import torch
+    if torch.backends.mps.is_available():
+        _device = "mps"
+    else:
+        _device = "cpu"
+    print(f"Training device: {_device}")
+
     model = SAC(
         policy                  = sac_cfg.policy,
         env                     = env,
@@ -276,6 +284,7 @@ def train(
             "features_extractor_kwargs": {},
             "net_arch":                  sac_cfg.net_arch,
         },
+        device                  = _device,
         verbose                 = 1,
         # tensorboard_log omitted — not required; W&B logs directly
     )

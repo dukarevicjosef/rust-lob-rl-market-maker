@@ -73,6 +73,7 @@ class SACConfig:
 
 # Default environment config — reward v2 tuned parameters
 _DEFAULT_ENV_CFG: dict[str, Any] = {
+    "episode_length": 1_000,   # ~150s per episode at ~0.15s/step; enables frequent logging
     "reward_config": {
         "phi":                 0.01,
         "psi":                 0.001,

@@ -93,7 +93,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "events_per_step":    50,
     "warm_up_events":     1_000,
     # AS base parameters
-    "base_kappa":         50.0,
+    "base_kappa":         1.5,
     "quote_qty":          10,
     # Inventory
     "inventory_limit":    50,
@@ -118,7 +118,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
         "reward_version":       "v1",
     },
     # Observation version
-    "obs_version":        "v1",   # "v1" = 8 keys (baseline), "v2" = 14 keys (regime features)
+    "obs_version":        "v2",   # "v1" = 8 keys (baseline), "v2" = 14 keys (regime features)
     # Reward normalization
     "normalize_reward":   True,   # Welford online normalization; set False for eval
     "reward_clip":        10.0,   # clip range for normalized reward

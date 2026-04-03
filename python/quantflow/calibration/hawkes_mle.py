@@ -260,6 +260,14 @@ class HawkesMLE:
         D     = self.n_dims
         times = all_times[target_dim]
 
+        # Identify source dimensions with no observed events.
+        # Their α contributes nothing to either the log-intensity or the
+        # compensator (empty sums), so the LL gradient w.r.t. those α is
+        # identically zero. L-BFGS-B would leave them at whatever initial
+        # value they were given — producing phantom excitation entries.
+        # Fix: fix those α to 0 by setting lb = ub = 0.
+        empty_src = [j for j in range(D) if len(all_times[j]) == 0]
+
         best_ll   = -np.inf
         best_res  = None
 
@@ -270,19 +278,28 @@ class HawkesMLE:
                 # Deterministic initialisation from empirical rates
                 rate_target = len(times) / T if T > 0 else 1.0
                 mu0    = rate_target * 0.5
-                alpha0 = np.full(D, rate_target * 0.1)
+                alpha0 = np.array([
+                    0.0 if j in empty_src else rate_target * 0.1
+                    for j in range(D)
+                ])
                 beta0  = np.full(D, self.beta_init)
             else:
                 mu0    = rng.uniform(1e-4, 2.0)
-                alpha0 = rng.uniform(0.0, 1.0, size=D)
+                alpha0 = np.array([
+                    0.0 if j in empty_src else rng.uniform(0.0, 1.0)
+                    for j in range(D)
+                ])
                 beta0  = rng.uniform(1.0, 50.0, size=D)
 
             x0 = np.concatenate([[mu0], alpha0, beta0])
 
             bounds = (
-                [(1e-8, None)]          # mu
-                + [(0.0, None)] * D     # alpha (non-negative)
-                + [(1e-4, None)] * D    # beta  (strictly positive)
+                [(1e-8, None)]                                # mu
+                + [
+                    (0.0, 0.0) if j in empty_src else (0.0, None)
+                    for j in range(D)
+                ]                                             # alpha — frozen at 0 for empty dims
+                + [(1e-4, None)] * D                         # beta
             )
 
             res = minimize(
@@ -306,7 +323,19 @@ class HawkesMLE:
         alpha = x[1 : 1 + D].copy()
         beta  = x[1 + D : 1 + 2 * D].copy()
 
+        # Hard-zero any empty-source alphas (guard against numerical noise)
+        for j in empty_src:
+            alpha[j] = 0.0
+
         branching = float(np.sum(alpha / beta))
+
+        # Stationarity constraint: branching ratio must be < 1.
+        # Post-hoc rescaling: if ρ > 0.95, scale all α down proportionally
+        # so that ρ_constrained = 0.95. β is unchanged (kernel shape preserved).
+        BR_MAX = 0.95
+        if branching > BR_MAX:
+            alpha    = alpha * (BR_MAX / branching)
+            branching = float(np.sum(alpha / beta))
 
         return HawkesParams(
             dim=target_dim,

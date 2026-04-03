@@ -155,6 +155,45 @@ impl HawkesLobSimulator {
         }
     }
 
+    /// Construct from calibrated per-dimension Hawkes parameters.
+    ///
+    /// Parameter conventions match the Python MLE output:
+    ///   - `baselines[i]`      = μ_i  (baseline rate, events/s)
+    ///   - `alpha_matrix[i][j]` = α_ij / β_ij  (branching-ratio contribution, Rust n* convention)
+    ///   - `beta_matrix[i][j]`  = β_ij  (decay rate, 1/s)
+    ///
+    /// The Python MLE parameterises φ(t) = α·exp(−β·t), so ∫φ = α/β.
+    /// The Rust `ExponentialKernel` parameterises φ(t) = n*·β·exp(−β·t), so ∫φ = n*.
+    /// Hence the caller must pass `n*_ij = α_py_ij / β_py_ij`.
+    ///
+    /// Values are clamped to safe ranges:
+    ///   n* ∈ [0, 0.999] (kernel stability),  β ≥ 0.01 (avoid division by zero).
+    pub fn from_calibrated(
+        baselines:    Vec<f64>,
+        alpha_matrix: Vec<Vec<f64>>,   // alpha_matrix[i][j] = n* from source j to target i
+        beta_matrix:  Vec<Vec<f64>>,   // beta_matrix[i][j]  = decay rate
+        config:       SimulatorConfig,
+    ) -> Result<Self, ProcessError> {
+        let d = baselines.len();
+        let kernels: Vec<Vec<Box<dyn ExcitationKernel + Send + Sync>>> = (0..d)
+            .map(|i| {
+                (0..d)
+                    .map(|j| -> Box<dyn ExcitationKernel + Send + Sync> {
+                        let a = alpha_matrix[i][j].clamp(0.0, 0.999);
+                        let b = beta_matrix[i][j].max(0.01);
+                        Box::new(
+                            ExponentialKernel::new(a, b)
+                                .unwrap_or_else(|_| ExponentialKernel::new(0.0, 1.0).unwrap()),
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let hawkes = MultivariateHawkes::new(baselines, kernels)?;
+        Ok(HawkesLobSimulator::new(hawkes, config))
+    }
+
     /// Build a 12-dimensional LOB simulator with calibrated default parameters.
     ///
     /// Background rates follow the empirical ordering:

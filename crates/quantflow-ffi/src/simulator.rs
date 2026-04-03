@@ -39,31 +39,67 @@ impl PyHawkesSimulator {
     /// - ``t_max`` (float): trading day length in seconds (default 23400)
     /// - ``snapshot_interval`` (int): events between book snapshots (default 100)
     /// - ``initial_mid`` (float): initial mid-price (default 100.0)
+    /// - ``tick_size_f`` (float): tick size in price units (default 1.0)
+    ///
+    /// Calibrated Hawkes parameters (all three must be provided together):
+    /// - ``hawkes_mu``    (list[float]): baseline rates μ_i, length 12
+    /// - ``hawkes_alpha`` (list[list[float]]): branching-ratio matrix n*_ij = α_py/β_py, 12×12
+    /// - ``hawkes_beta``  (list[list[float]]): decay-rate matrix β_ij, 12×12
+    ///
+    /// When ``hawkes_mu/alpha/beta`` are all present the calibrated constructor
+    /// is used instead of ``default_12d()``.
     #[staticmethod]
     #[pyo3(signature = (config=None))]
     pub fn new(config: Option<&Bound<PyDict>>) -> PyResult<Self> {
-        let mut sim = HawkesLobSimulator::default_12d()
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        use quantflow_core::orderbook::types::{Price, PRICE_SCALE};
+        use quantflow_core::simulator::SimulatorConfig;
+
+        // Start with a base SimulatorConfig (not the full simulator yet).
+        let mut base_cfg = SimulatorConfig::default();
+
+        // Pre-parse scalar overrides so they apply regardless of Hawkes path.
+        let mut hawkes_mu:    Option<Vec<f64>>         = None;
+        let mut hawkes_alpha: Option<Vec<Vec<f64>>>    = None;
+        let mut hawkes_beta:  Option<Vec<Vec<f64>>>    = None;
 
         if let Some(cfg) = config {
             if let Ok(Some(v)) = cfg.get_item("t_max") {
-                sim.config.t_max = v.extract::<f64>()?;
+                base_cfg.t_max = v.extract::<f64>()?;
             }
             if let Ok(Some(v)) = cfg.get_item("snapshot_interval") {
-                sim.config.snapshot_interval = v.extract::<usize>()?;
+                base_cfg.snapshot_interval = v.extract::<usize>()?;
             }
             if let Ok(Some(v)) = cfg.get_item("initial_mid") {
-                use quantflow_core::orderbook::types::Price;
-                sim.config.initial_mid = Price::from_f64(v.extract::<f64>()?);
+                base_cfg.initial_mid = Price::from_f64(v.extract::<f64>()?);
             }
-            // tick_size_f: tick size in native price units (e.g. 0.01 for a cent tick).
-            // Converts to fixed-point: stored as round(tick_f * PRICE_SCALE).
             if let Ok(Some(v)) = cfg.get_item("tick_size_f") {
-                use quantflow_core::orderbook::types::PRICE_SCALE;
                 let tick_f = v.extract::<f64>()?;
-                sim.config.tick_size = (tick_f * PRICE_SCALE as f64).round() as i64;
+                base_cfg.tick_size = (tick_f * PRICE_SCALE as f64).round() as i64;
+            }
+            if let Ok(Some(v)) = cfg.get_item("hawkes_mu") {
+                hawkes_mu = Some(v.extract::<Vec<f64>>()?);
+            }
+            if let Ok(Some(v)) = cfg.get_item("hawkes_alpha") {
+                hawkes_alpha = Some(v.extract::<Vec<Vec<f64>>>()?);
+            }
+            if let Ok(Some(v)) = cfg.get_item("hawkes_beta") {
+                hawkes_beta = Some(v.extract::<Vec<Vec<f64>>>()?);
             }
         }
+
+        // Choose constructor: calibrated if all three Hawkes params are present.
+        let sim = match (hawkes_mu, hawkes_alpha, hawkes_beta) {
+            (Some(mu), Some(alpha), Some(beta)) => {
+                HawkesLobSimulator::from_calibrated(mu, alpha, beta, base_cfg)
+                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+            }
+            _ => {
+                let mut s = HawkesLobSimulator::default_12d()
+                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+                s.config = base_cfg;
+                s
+            }
+        };
 
         Ok(PyHawkesSimulator { inner: sim })
     }

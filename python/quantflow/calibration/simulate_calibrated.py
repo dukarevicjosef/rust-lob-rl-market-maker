@@ -12,10 +12,12 @@ from pathlib import Path
 from .hawkes_mle import CalibrationResult
 
 # ── LOB event-type constants (must match EventClassifier.DIM_NAMES) ──────────
-DIM_MARKET_BUY    = 0
-DIM_MARKET_SELL   = 1
-DIM_LIM_BUY_BEST  = 2
-DIM_LIM_SELL_BEST = 3
+DIM_MARKET_BUY     = 0
+DIM_MARKET_SELL    = 1
+DIM_LIM_BUY_BEST   = 2
+DIM_LIM_SELL_BEST  = 3
+DIM_CXL_BUY_BEST   = 6   # best-level cancel → widens spread
+DIM_CXL_SELL_BEST  = 7   # best-level cancel → widens spread
 
 
 def simulate_from_calibration(
@@ -24,7 +26,7 @@ def simulate_from_calibration(
     t_max:        float = 600.0,
     sigma_tick:   float | None = None,
     P0:           float = 65_000.0,
-    spread_init:  float = 2.0,
+    spread_init:  float = 0.20,
     seed_base:    int = 42,
 ) -> list[dict]:
     """
@@ -69,12 +71,12 @@ def simulate_from_calibration(
 
 
 def _simulate_session(
-    params:      CalibrationResult,
-    t_max:       float,
-    seed:        int,
-    P0:          float,
-    sigma_tick:  float,
-    spread_init: float,
+    params:       CalibrationResult,
+    t_max:        float,
+    seed:         int,
+    P0:           float,
+    sigma_tick:   float,
+    spread_init:  float,
 ) -> dict:
     """
     Ogata thinning for multivariate Hawkes + simplified price model.
@@ -107,8 +109,10 @@ def _simulate_session(
     t = 0.0
 
     # Price state
-    mid        = P0
+    mid         = P0
     half_spread = spread_init / 2.0
+    half_spread_min = max(spread_init / 4.0, 0.05)   # minimum half-spread (≥ 0.05 USD)
+    half_spread_max = spread_init * 5.0               # cap at 5× initial
     mid_recs:    list[tuple[float, float]] = [(0.0, mid)]
     spread_recs: list[tuple[float, float]] = [(0.0, spread_init)]
 
@@ -148,16 +152,17 @@ def _simulate_session(
             # Update price state
             if dim == DIM_MARKET_BUY:
                 mid        += abs(rng.normal(0.0, sigma_tick))
-                half_spread = max(half_spread * rng.uniform(0.95, 1.05), 0.5)
+                half_spread = max(half_spread * rng.uniform(0.95, 1.05), half_spread_min)
             elif dim == DIM_MARKET_SELL:
                 mid        -= abs(rng.normal(0.0, sigma_tick))
-                half_spread = max(half_spread * rng.uniform(0.95, 1.05), 0.5)
+                half_spread = max(half_spread * rng.uniform(0.95, 1.05), half_spread_min)
             elif dim in (DIM_LIM_BUY_BEST, DIM_LIM_SELL_BEST):
                 # New limit quote at best: spread narrows slightly
-                half_spread = max(half_spread * rng.uniform(0.92, 1.0), 0.5)
-            else:
-                # Cancel / deep events: spread widens slightly, cap at 10× initial
-                half_spread = min(half_spread * rng.uniform(1.0, 1.015), spread_init * 5.0)
+                half_spread = max(half_spread * rng.uniform(0.92, 1.0), half_spread_min)
+            elif dim in (DIM_CXL_BUY_BEST, DIM_CXL_SELL_BEST):
+                # Best-level cancel: spread widens slightly
+                half_spread = min(half_spread * rng.uniform(1.0, 1.03), half_spread_max)
+            # Deep limit / deep cancel events don't affect spread
 
             mid_recs.append((t_new, mid))
             spread_recs.append((t_new, 2.0 * half_spread))

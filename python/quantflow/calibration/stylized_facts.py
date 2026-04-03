@@ -59,7 +59,7 @@ class StylizedFacts:
     def from_parquet(
         cls,
         path: str,
-        t_max: float = 600.0,
+        t_max: float = 3600.0,
         label: str = "Empirical",
     ) -> StylizedFacts:
         """Compute facts from a processed events Parquet file."""
@@ -322,25 +322,29 @@ class StylizedFacts:
         """
         Reconstruct mid price and spread from LOB event stream.
 
-        Dim 2 (LimitBuyBest)  → new best bid
-        Dim 3 (LimitSellBest) → new best ask
-        Dim 0 (MarketBuy)     → traded at ask (initialises best_ask if unknown)
-        Dim 1 (MarketSell)    → traded at bid (initialises best_bid if unknown)
+        event_type 0 (MarketBuy)      → executed at ask price → best_ask
+        event_type 1 (MarketSell)     → executed at bid price → best_bid
+        event_type 3 (LimitSellBest)  → new best ask limit order → best_ask
+
+        event_type 2 (LimitBuyBest) is intentionally skipped: empirical data
+        shows its price column contains deep-book snapshot prices (often far
+        below mid), not actual best-bid prices.
         """
         best_bid = np.nan
         best_ask = np.nan
         mid_recs:    list[tuple[float, float]] = []
         spread_recs: list[tuple[float, float]] = []
 
+        # Filter plausible prices: must be positive and finite
         for t, e, p in zip(times, event_types, prices):
-            if e == 2:    # Limit Buy Best → new best bid
+            if not np.isfinite(p) or p <= 0:
+                continue
+            if e == 0:    # Market Buy → executed at ask
+                best_ask = p
+            elif e == 1:  # Market Sell → executed at bid
                 best_bid = p
             elif e == 3:  # Limit Sell Best → new best ask
                 best_ask = p
-            elif e == 0 and np.isnan(best_ask):
-                best_ask = p
-            elif e == 1 and np.isnan(best_bid):
-                best_bid = p
 
             if (not np.isnan(best_bid) and not np.isnan(best_ask)
                     and best_ask > best_bid):
@@ -348,11 +352,12 @@ class StylizedFacts:
                 spread_recs.append((t, best_ask - best_bid))
 
         if not mid_recs:
-            # Fallback: use all event prices as a rough mid proxy
-            valid = prices[prices > 0]
-            t_valid = times[prices > 0]
-            mid_recs    = list(zip(t_valid.tolist(), valid.tolist()))
-            spread_recs = [(t, 1.0) for t, _ in mid_recs]
+            # Fallback: use Market orders only as a rough mid proxy
+            mkt_mask = np.isin(event_types, [0, 1]) & np.isfinite(prices) & (prices > 0)
+            t_valid = times[mkt_mask]
+            p_valid = prices[mkt_mask]
+            mid_recs    = list(zip(t_valid.tolist(), p_valid.tolist()))
+            spread_recs = [(t, 0.1) for t, _ in mid_recs]
 
         return (
             np.array(mid_recs,    dtype=np.float64),

@@ -262,11 +262,7 @@ def train(
         merged_env_cfg["hawkes_params_path"] = hawkes_params_path
     env = MarketMakingEnv(merged_env_cfg)
 
-    import torch
-    if torch.backends.mps.is_available():
-        _device = "mps"
-    else:
-        _device = "cpu"
+    _device = "cpu"
     print(f"Training device: {_device}")
 
     model = SAC(

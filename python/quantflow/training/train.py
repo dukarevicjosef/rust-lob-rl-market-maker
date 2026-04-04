@@ -73,9 +73,10 @@ class SACConfig:
 
 # Default environment config — reward v2 tuned parameters
 _DEFAULT_ENV_CFG: dict[str, Any] = {
-    "episode_length":  1_000,   # ~150s per episode at ~0.15s/step; enables frequent logging
-    "warm_up_events":  200,     # reduced from 1000; 200 events sufficient to fill the book
-    "events_per_step": 20,      # reduced from 50; more decisions/step, less Rust compute
+    "t_max":           200.0,   # sim-seconds per day; 1000steps×20ev÷217ev/s≈92s, 2× buffer
+    "episode_length":  1_000,
+    "warm_up_events":  200,
+    "events_per_step": 20,
     "reward_config": {
         "phi":                 0.01,
         "psi":                 0.001,
@@ -91,6 +92,7 @@ _DEFAULT_ENV_CFG: dict[str, Any] = {
 # normalize_reward=False so eval metrics reflect true economic values,
 # not the normalized signal seen by the agent during training.
 _EVAL_ENV_CFG: dict[str, Any] = {
+    "t_max":            100.0,  # 500steps×20ev÷217ev/s≈46s, 2× buffer
     "episode_length":   500,
     "events_per_step":  20,
     "warm_up_events":   200,

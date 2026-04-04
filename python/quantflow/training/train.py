@@ -64,7 +64,7 @@ class SACConfig:
     total_timesteps: int = 1_000_000
     # Callback / evaluation
     eval_freq:          int   = 10_000
-    n_eval_episodes:    int   = 20
+    n_eval_episodes:    int   = 5
     eval_seed_offset:   int   = 5_000   # fixed seeds 5000–5019
     # AS baseline for delta logging
     as_baseline_gamma:        float = 0.1
@@ -140,6 +140,7 @@ class QuantflowEvalCallback(BaseCallback):
         if self.n_calls % self._eval_freq != 0:
             return True
 
+        print(f"[eval @ {self.num_timesteps:,d}] running {self._n_eval} episodes ...", flush=True)
         sac_m = self._run_episodes(
             lambda obs: self.model.predict(obs, deterministic=True)[0]
         )

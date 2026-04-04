@@ -54,7 +54,7 @@ class SACConfig:
     policy:        str         = "MultiInputPolicy"  # required for Dict obs
     # SAC hyperparameters
     buffer_size:   int         = 300_000
-    batch_size:    int         = 256
+    batch_size:    int         = 128
     tau:           float       = 0.005
     gamma:         float       = 0.99
     ent_coef:      str | float = "auto"              # automatic entropy tuning
@@ -75,6 +75,7 @@ class SACConfig:
 _DEFAULT_ENV_CFG: dict[str, Any] = {
     "episode_length":  1_000,   # ~150s per episode at ~0.15s/step; enables frequent logging
     "warm_up_events":  200,     # reduced from 1000; 200 events sufficient to fill the book
+    "events_per_step": 20,      # reduced from 50; more decisions/step, less Rust compute
     "reward_config": {
         "phi":                 0.01,
         "psi":                 0.001,
@@ -91,7 +92,7 @@ _DEFAULT_ENV_CFG: dict[str, Any] = {
 # not the normalized signal seen by the agent during training.
 _EVAL_ENV_CFG: dict[str, Any] = {
     "episode_length":   500,
-    "events_per_step":  50,
+    "events_per_step":  20,
     "warm_up_events":   200,
     "normalize_reward": False,
 }

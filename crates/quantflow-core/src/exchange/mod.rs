@@ -29,12 +29,14 @@
 pub mod binance_rest;
 pub mod binance_ws;
 pub mod config;
+pub mod risk_manager;
 pub mod types;
 
 // Re-export the most-used items at the module level
 pub use binance_rest::BinanceRestClient;
 pub use binance_ws::UserDataStream;
 pub use config::ExchangeConfig;
+pub use risk_manager::{RiskConfig, RiskManager, RiskStatus, RiskViolation};
 pub use types::{
     AccountInfo, CancelResponse, ExchangeError, OrderResponse, OrderSide, UserDataEvent,
 };

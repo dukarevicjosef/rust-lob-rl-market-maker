@@ -201,6 +201,6 @@ results/                   # Evaluation plots, calibration figures
 
 ---
 
-**Built by Josef Dukarevic** — IT Consultant & Private Trader, targeting quantitative finance roles in Frankfurt/Amsterdam.
+**Built by Josef Dukarevic** — Private Trader
 
 [W&B Project](https://wandb.ai/dukarevicjosef-self-imployed/quantflow-mm)

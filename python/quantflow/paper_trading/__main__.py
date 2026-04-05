@@ -60,6 +60,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="W&B project name (default: quantflow-paper)",
     )
     p.add_argument(
+        "--env-file",
+        default=None,
+        metavar="PATH",
+        help="Path to .env file (default: .env in cwd or repo root)",
+    )
+    p.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -86,7 +92,7 @@ def main() -> None:
 
     from quantflow.paper_trading.config import PaperTradingConfig
 
-    cfg = PaperTradingConfig.from_env()
+    cfg = PaperTradingConfig.from_env(dotenv_path=args.env_file)
 
     # CLI overrides
     if args.model:

@@ -20,7 +20,10 @@ from quantflow.paper_trading.obs_builder import ObservationBuilder
 # ── 1. PaperTradingConfig.from_env() ─────────────────────────────────────────
 
 def test_config_from_env_defaults(monkeypatch):
-    """from_env() uses testnet=True when BINANCE_TESTNET is unset."""
+    """from_env() uses testnet=True and BTCUSDT when relevant vars are absent."""
+    import quantflow.paper_trading.config as cfg_mod
+    # Suppress .env loading so we test pure env-var defaults
+    monkeypatch.setattr(cfg_mod, "_load_dotenv", lambda *_a, **_kw: None)
     for var in ("BINANCE_API_KEY", "BINANCE_API_SECRET", "BINANCE_TESTNET",
                 "BINANCE_SYMBOL", "MODEL_PATH"):
         monkeypatch.delenv(var, raising=False)

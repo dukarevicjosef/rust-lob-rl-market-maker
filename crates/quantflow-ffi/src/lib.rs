@@ -1,6 +1,7 @@
 mod functions;
 mod orderbook;
 mod replay;
+mod risk_manager;
 mod simulator;
 mod strategy;
 
@@ -9,6 +10,7 @@ use pyo3::prelude::*;
 use functions::{calibrate_hawkes, load_lobster};
 use orderbook::PyOrderBook;
 use replay::PyReplayEngine;
+use risk_manager::PyRiskManager;
 use simulator::PyHawkesSimulator;
 use strategy::PyAvellanedaStoikov;
 
@@ -20,6 +22,7 @@ use strategy::PyAvellanedaStoikov;
 /// HawkesSimulator      -- 12-dimensional Hawkes-driven LOB event generator
 /// AvellanedaStoikov    -- Optimal market-making quotes (AS 2008)
 /// ReplayEngine         -- Historical Parquet playback through the LOB engine
+/// RiskManager          -- Pre-trade risk gate with kill switch
 ///
 /// Functions
 /// ---------
@@ -31,6 +34,7 @@ fn quantflow(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyHawkesSimulator>()?;
     m.add_class::<PyAvellanedaStoikov>()?;
     m.add_class::<PyReplayEngine>()?;
+    m.add_class::<PyRiskManager>()?;
     m.add_function(wrap_pyfunction!(calibrate_hawkes, m)?)?;
     m.add_function(wrap_pyfunction!(load_lobster, m)?)?;
     Ok(())

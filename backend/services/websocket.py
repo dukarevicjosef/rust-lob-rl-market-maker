@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import math
 from typing import Any
@@ -8,6 +9,7 @@ from typing import Any
 from fastapi import WebSocket
 
 from quantflow import AvellanedaStoikov, HawkesSimulator
+from quantflow.envs.safety_rules import apply_safety_rules
 
 _SAC_BASE_KAPPA = 50.0  # must stay in sync with sac_agent.BASE_KAPPA
 
@@ -20,7 +22,12 @@ _EVENTS_PER_FRAME = 50    # Hawkes events per 100 ms at 1× speed
 _QUOTE_INTERVAL = 1.0     # sim-seconds between quote refreshes
 _QUOTE_QTY      = 10      # lots per resting quote
 _INV_LIMIT      = 50      # hard inventory cap (must match AvellanedaStoikov param)
+_INV_SOFT_LIMIT = 30      # one-sided quoting above this absolute inventory
+_INV_HARD_LIMIT = 40      # forced liquidation above this absolute inventory
 _DUMP_OFFSET    = 2 * _TICK_SIZE   # aggressive dump: 2 ticks through mid
+_VOL_EMA_ALPHA  = 0.01    # smoothing for long-run vol EMA
+_VOL_THRESHOLD  = 2.0     # vol multiple above EMA that triggers spread widening
+_VOL_MULTIPLIER = 2.0     # half-spread scale factor in high-vol regime
 
 
 # ── Simulation state ──────────────────────────────────────────────────────────
@@ -101,6 +108,9 @@ class SimState:
 
         self._pending_trades: list[dict] = []
         self._pnl_hist:       list[float] = [0.0]
+        self._mid_hist:       collections.deque = collections.deque(maxlen=30)
+        self._vol_ema:        float = 0.0
+        self._last_quote_mid: float | None = None
 
     # ── Public entry point ────────────────────────────────────────────────────
 
@@ -318,80 +328,104 @@ class SimState:
         best_bid = book.best_bid()
         best_ask = book.best_ask()
 
-        inv_ratio = abs(self.inventory) / _INV_LIMIT
+        # ── Update vol EMA ────────────────────────────────────────────────────
+        self._mid_hist.append(mid)
+        current_vol = 0.0
+        if len(self._mid_hist) >= 2:
+            mids = list(self._mid_hist)
+            rets = [math.log(b / a) for a, b in zip(mids[:-1], mids[1:]) if a > 0 and b > 0]
+            if rets:
+                current_vol = math.sqrt(sum(r * r for r in rets) / len(rets))
+        if current_vol > 0.0:
+            self._vol_ema = (1.0 - _VOL_EMA_ALPHA) * self._vol_ema + _VOL_EMA_ALPHA * current_vol
 
-        if inv_ratio >= 1.0:
-            if self.inventory > 0:
-                dump_p = round(mid - _DUMP_OFFSET, 4)
-                if best_bid is None or dump_p > best_bid[0]:
-                    try:
-                        self.ask_id = self.sim.place_limit_order("ask", dump_p, _QUOTE_QTY)
-                    except Exception:
-                        pass
-            else:
-                dump_p = round(mid + _DUMP_OFFSET, 4)
-                if best_ask is None or dump_p < best_ask[0]:
-                    try:
-                        self.bid_id = self.sim.place_limit_order("bid", dump_p, _QUOTE_QTY)
-                    except Exception:
-                        pass
-        else:
-            if self._sac is not None:
-                gamma, kappa_off = self._sac.get_action(
-                    self.sim, mid, self.inventory, self.cash, self.t
-                )
-                kappa = _SAC_BASE_KAPPA * (1.0 + kappa_off)
-                self.strat = AvellanedaStoikov(
-                    gamma=gamma,
-                    kappa=kappa,
-                    t_end=_T_MAX,
-                    inventory_limit=_INV_LIMIT,
-                    sigma=0.01,
-                    spread_floor=_TICK_SIZE,
-                )
-                self._last_gamma     = gamma
-                self._last_kappa_off = kappa_off
-
-            (bid_p, ask_p), mode = self.strat.compute_quotes_skewed(
-                mid, self.inventory, self.t
+        # ── Compute raw AS (or SAC) quotes ────────────────────────────────────
+        if self._sac is not None:
+            gamma, kappa_off = self._sac.get_action(
+                self.sim, mid, self.inventory, self.cash, self.t
             )
-            bid_p = round(bid_p, 4)
-            ask_p = round(ask_p, 4)
+            kappa = _SAC_BASE_KAPPA * (1.0 + kappa_off)
+            self.strat = AvellanedaStoikov(
+                gamma=gamma,
+                kappa=kappa,
+                t_end=_T_MAX,
+                inventory_limit=_INV_LIMIT,
+                sigma=0.01,
+                spread_floor=_TICK_SIZE,
+            )
+            self._last_gamma     = gamma
+            self._last_kappa_off = kappa_off
 
-            if bid_p <= 0 or ask_p <= bid_p:
-                self.last_quote_t = self.t
-                return
+        (raw_bid, raw_ask), mode = self.strat.compute_quotes_skewed(
+            mid, self.inventory, self.t
+        )
+        raw_bid = round(raw_bid, 4)
+        raw_ask = round(raw_ask, 4)
 
-            _max_offset = mid * 0.05
-            if bid_p < mid - _max_offset or ask_p > mid + _max_offset:
-                self.last_quote_t = self.t
-                return
+        if raw_bid <= 0 or raw_ask <= raw_bid:
+            self.last_quote_t = self.t
+            return
 
-            if best_ask is not None and bid_p >= best_ask[0]:
-                bid_p = round(best_ask[0] - _TICK_SIZE, 4)
-            if best_bid is not None and ask_p <= best_bid[0]:
-                ask_p = round(best_bid[0] + _TICK_SIZE, 4)
+        _max_offset = mid * 0.05
+        if raw_bid < mid - _max_offset or raw_ask > mid + _max_offset:
+            self.last_quote_t = self.t
+            return
 
-            if bid_p <= 0 or ask_p <= bid_p:
-                self.last_quote_t = self.t
-                return
+        if best_ask is not None and raw_bid >= best_ask[0]:
+            raw_bid = round(best_ask[0] - _TICK_SIZE, 4)
+        if best_bid is not None and raw_ask <= best_bid[0]:
+            raw_ask = round(best_bid[0] + _TICK_SIZE, 4)
 
-            place_bid = (mode != "suppress" or self.inventory < 0)
-            place_ask = (mode != "suppress" or self.inventory > 0)
+        if raw_bid <= 0 or raw_ask <= raw_bid:
+            self.last_quote_t = self.t
+            return
 
-            if place_bid and abs(self.inventory + _QUOTE_QTY) <= _INV_LIMIT:
-                try:
-                    self.bid_id = self.sim.place_limit_order("bid", bid_p, _QUOTE_QTY)
-                    self._last_bid_q = bid_p
-                except Exception:
-                    pass
+        # Suppress inventory-increasing side when mode="suppress" (AS skewing)
+        place_bid = (mode != "suppress" or self.inventory < 0)
+        place_ask = (mode != "suppress" or self.inventory > 0)
+        if not place_bid:
+            raw_bid = None  # type: ignore[assignment]
+        if not place_ask:
+            raw_ask = None  # type: ignore[assignment]
 
-            if place_ask and abs(self.inventory - _QUOTE_QTY) <= _INV_LIMIT:
-                try:
-                    self.ask_id = self.sim.place_limit_order("ask", ask_p, _QUOTE_QTY)
-                    self._last_ask_q = ask_p
-                except Exception:
-                    pass
+        # ── Apply safety rules ────────────────────────────────────────────────
+        # Provide a floor of 0.0 so the vol-regime rule is inert until the EMA
+        # has accumulated meaningful signal (first ~100 quote refreshes).
+        safe_bid, safe_ask, _ = apply_safety_rules(
+            raw_bid if raw_bid is not None else mid,
+            raw_ask if raw_ask is not None else mid,
+            mid,
+            self.inventory,
+            current_vol,
+            self._vol_ema,
+            self._last_quote_mid,
+            inventory_soft_limit  = _INV_SOFT_LIMIT,
+            inventory_hard_limit  = _INV_HARD_LIMIT,
+            tick_size             = _TICK_SIZE,
+            vol_spread_threshold  = _VOL_THRESHOLD,
+            vol_spread_multiplier = _VOL_MULTIPLIER,
+        )
+        # If either side was already suppressed by mode="suppress", keep it off
+        if raw_bid is None:
+            safe_bid = None
+        if raw_ask is None:
+            safe_ask = None
+
+        self._last_quote_mid = mid if (safe_bid is not None or safe_ask is not None) else None
+
+        if safe_bid is not None and abs(self.inventory + _QUOTE_QTY) <= _INV_LIMIT:
+            try:
+                self.bid_id = self.sim.place_limit_order("bid", round(safe_bid, 4), _QUOTE_QTY)
+                self._last_bid_q = safe_bid
+            except Exception:
+                pass
+
+        if safe_ask is not None and abs(self.inventory - _QUOTE_QTY) <= _INV_LIMIT:
+            try:
+                self.ask_id = self.sim.place_limit_order("ask", round(safe_ask, 4), _QUOTE_QTY)
+                self._last_ask_q = safe_ask
+            except Exception:
+                pass
 
         self.last_quote_t = self.t
 

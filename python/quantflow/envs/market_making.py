@@ -73,6 +73,7 @@ class RewardNormalizer:
         return float(np.clip(normalized, -self.clip, self.clip))
 
 import quantflow
+from quantflow.envs.safety_rules import apply_safety_rules, RulesTriggered
 from quantflow.obs_features import (
     compute_order_flow_imbalance,
     compute_trade_arrival_rate,
@@ -97,6 +98,12 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "quote_qty":          10,
     # Inventory
     "inventory_limit":    50,
+    "inventory_soft_limit": 30,
+    "inventory_hard_limit": 40,
+    # Safety rules
+    "tick_size":           0.01,
+    "vol_spread_threshold": 2.0,
+    "vol_spread_multiplier": 2.0,
     # Observation normalisation
     "lob_levels":         5,
     "max_qty_scale":      500.0,
@@ -203,6 +210,11 @@ class MarketMakingEnv(gym.Env):
         self.pnl_scale:       float = float(cfg.get("pnl_scale") or
                                             self.initial_mid * self.inventory_limit)
         self.t_max:           float = float(cfg["t_max"])
+        self.inventory_soft_limit: int   = int(cfg["inventory_soft_limit"])
+        self.inventory_hard_limit: int   = int(cfg["inventory_hard_limit"])
+        self._tick_size:           float = float(cfg["tick_size"])
+        self._vol_spread_threshold: float = float(cfg["vol_spread_threshold"])
+        self._vol_spread_multiplier: float = float(cfg["vol_spread_multiplier"])
 
         # v1 reward weights (top-level config, backward-compatible)
         self.phi         = float(cfg["phi"])
@@ -294,6 +306,10 @@ class MarketMakingEnv(gym.Env):
         self._current_spread: float = 0.0
         self._terminated:     bool  = False
 
+        # Safety rule state (reset each episode)
+        self._last_quote_mid: float | None = None
+        self._vol_ema:        float        = 0.0
+
         # Domain randomization
         self._pending_domain_params: dict | None = None
         self._sigma_scale: float = 1.0   # current lognormal σ multiplier
@@ -363,6 +379,8 @@ class MarketMakingEnv(gym.Env):
         self._mid_prices_short.clear()
         self._mid_prices_long.clear()
         self._spread_history.clear()
+        self._last_quote_mid = None
+        self._vol_ema        = 0.0
 
         mid = self._sim.mid_price()
         self._prev_mid = mid if mid is not None else self.initial_mid
@@ -406,7 +424,25 @@ class MarketMakingEnv(gym.Env):
             gamma=gamma, kappa=kappa, t_end=self.t_max, sigma=0.02
         ).compute_quotes(mid=mid, inventory=self._inventory, t=self._sim_time)
 
-        self._place_quotes(bid_p, ask_p)
+        # Update vol EMA before applying rules (0.0 until first nonzero vol)
+        _step_vol = self._realized_vol()
+        if _step_vol > 0.0:
+            self._vol_ema = 0.99 * self._vol_ema + 0.01 * _step_vol
+
+        safe_bid, safe_ask, _rules = apply_safety_rules(
+            bid_p, ask_p, mid, self._inventory, _step_vol, self._vol_ema,
+            self._last_quote_mid,
+            inventory_soft_limit  = self.inventory_soft_limit,
+            inventory_hard_limit  = self.inventory_hard_limit,
+            tick_size             = self._tick_size,
+            vol_spread_threshold  = self._vol_spread_threshold,
+            vol_spread_multiplier = self._vol_spread_multiplier,
+        )
+        # Record mid at quote placement for the next step's quote-pull check.
+        # Set to None when both sides were pulled so we re-check next step too.
+        self._last_quote_mid = mid if (safe_bid is not None or safe_ask is not None) else None
+
+        self._place_quotes(safe_bid, safe_ask)
 
         fill_pnl = 0.0
         for _ in range(self.events_per_step):
@@ -461,6 +497,12 @@ class MarketMakingEnv(gym.Env):
             "mid":        current_mid,
             "raw_reward": raw_reward,
             "reward_components": components,
+            "rules_triggered": {
+                "vol_regime":     _rules.vol_regime,
+                "quote_pull":     _rules.quote_pull,
+                "inventory_hard": _rules.inventory_hard,
+                "inventory_soft": _rules.inventory_soft,
+            },
         }
         return obs, float(reward), terminated, False, info
 
@@ -569,21 +611,24 @@ class MarketMakingEnv(gym.Env):
             self._sim.cancel_agent_order(self._ask_id)
             self._ask_id = None
 
-    def _place_quotes(self, bid_p: float, ask_p: float) -> None:
-        if bid_p <= 0.0 or ask_p <= bid_p:
+    def _place_quotes(self, bid_p: float | None, ask_p: float | None) -> None:
+        # Sanity: when both prices are present ensure ask > bid (normal quoting)
+        if bid_p is not None and ask_p is not None and ask_p <= bid_p:
             return
         inv = self._inventory
         qty = self.quote_qty
-        if inv + qty <= self.inventory_limit:
-            try:
-                self._bid_id = self._sim.place_limit_order("bid", bid_p, qty)
-            except Exception:
-                self._bid_id = None
-        if inv - qty >= -self.inventory_limit:
-            try:
-                self._ask_id = self._sim.place_limit_order("ask", ask_p, qty)
-            except Exception:
-                self._ask_id = None
+        if bid_p is not None and bid_p > 0.0:
+            if inv + qty <= self.inventory_limit:
+                try:
+                    self._bid_id = self._sim.place_limit_order("bid", bid_p, qty)
+                except Exception:
+                    self._bid_id = None
+        if ask_p is not None and ask_p > 0.0:
+            if inv - qty >= -self.inventory_limit:
+                try:
+                    self._ask_id = self._sim.place_limit_order("ask", ask_p, qty)
+                except Exception:
+                    self._ask_id = None
 
     def _process_fills(self, trades: list[dict]) -> float:
         pnl_delta = 0.0

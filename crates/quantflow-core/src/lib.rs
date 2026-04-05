@@ -1,4 +1,5 @@
 pub mod data;
+pub mod exchange;
 pub mod hawkes;
 pub mod lob;
 pub mod metrics;

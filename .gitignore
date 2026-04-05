@@ -35,3 +35,7 @@ dashboard/.next/
 .idea/
 .vscode/
 *.swp
+
+# Environment / secrets — never commit
+.env
+.env.local

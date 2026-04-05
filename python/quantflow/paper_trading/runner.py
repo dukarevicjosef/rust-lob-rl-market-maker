@@ -252,16 +252,20 @@ class PaperTradingRunner:
             for _ in tasks:
                 self._risk.on_order_cancelled()
 
+    @staticmethod
+    def _min_qty(price: float, min_notional: float = 105.0) -> float:
+        """Minimum BTC qty so that price × qty ≥ min_notional, rounded up to 3 dp."""
+        return math.ceil(min_notional / price * 1000) / 1000
+
     async def _place_live_quotes(self, bid_p: float | None, ask_p: float | None) -> None:
         cfg = self._cfg
-        qty = cfg.quote_qty_btc
-        mid = self._last_mid
 
         if bid_p is not None and ask_p is not None and ask_p <= bid_p:
             return  # crossed — skip
 
         if bid_p is not None and bid_p > 0.0:
             bid_p_rounded = round(bid_p / cfg.tick_size) * cfg.tick_size
+            qty = max(cfg.quote_qty_btc, self._min_qty(bid_p_rounded))
             try:
                 self._risk.check_order("buy", qty, bid_p_rounded)
                 resp = await self._client.place_limit_order(
@@ -277,6 +281,7 @@ class PaperTradingRunner:
 
         if ask_p is not None and ask_p > 0.0:
             ask_p_rounded = round(ask_p / cfg.tick_size) * cfg.tick_size
+            qty = max(cfg.quote_qty_btc, self._min_qty(ask_p_rounded))
             try:
                 self._risk.check_order("sell", qty, ask_p_rounded)
                 resp = await self._client.place_limit_order(

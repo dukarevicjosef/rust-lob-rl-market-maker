@@ -73,8 +73,8 @@ class SACConfig:
 
 # Default environment config — reward v2 tuned parameters
 _DEFAULT_ENV_CFG: dict[str, Any] = {
-    "t_max":           200.0,   # sim-seconds per day; 1000steps×20ev÷217ev/s≈92s, 2× buffer
-    "episode_length":  1_000,
+    "t_max":           100.0,   # sim-seconds; 500steps×20ev÷217ev/s≈46s, 2× buffer
+    "episode_length":  500,
     "warm_up_events":  200,
     "events_per_step": 20,
     "reward_config": {
@@ -101,6 +101,39 @@ _EVAL_ENV_CFG: dict[str, Any] = {
 
 
 # ── Callbacks ─────────────────────────────────────────────────────────────────
+
+class RuleMetricsCallback(BaseCallback):
+    """
+    Log safety-rule trigger percentages to W&B at the end of each training
+    episode.  SB3 exposes ``self.locals["infos"]`` which contains the last
+    ``info`` dict returned by the env.  At episode boundaries (``dones[i]``),
+    the rule-pct keys reflect the full episode.
+    """
+
+    def __init__(self, use_wandb: bool = False, verbose: int = 0) -> None:
+        super().__init__(verbose)
+        self._use_wandb = use_wandb and _WANDB_AVAILABLE
+
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos", [])
+        dones = self.locals.get("dones", [])
+        for info, done in zip(infos, dones):
+            if not done:
+                continue
+            metrics = {}
+            for key in (
+                "rules/inventory_soft_pct",
+                "rules/inventory_hard_pct",
+                "rules/quote_pull_pct",
+                "rules/vol_regime_pct",
+            ):
+                if key in info:
+                    metrics[key] = info[key]
+                    self.logger.record(key, info[key])
+            if metrics and self._use_wandb:
+                _wandb.log(metrics, step=self.num_timesteps)
+        return True
+
 
 class QuantflowEvalCallback(BaseCallback):
     """
@@ -292,7 +325,9 @@ def train(
     wandb_active = False
     if use_wandb:
         if _WANDB_AVAILABLE:
-            _wandb_tags = ["phase-c", "btcusdt-calibrated"] if hawkes_params_path else []
+            _wandb_tags = ["sharpe-optimization", "safety-rules-in-training", "episode-500"]
+            if hawkes_params_path:
+                _wandb_tags.append("btcusdt-calibrated")
             _wandb.init(
                 project          = wandb_project,
                 name             = wandb_name,
@@ -321,7 +356,8 @@ def train(
             as_gamma         = sac_cfg.as_baseline_gamma,
             as_kappa_offset  = sac_cfg.as_baseline_kappa_offset,
             use_wandb        = wandb_active,
-        )
+        ),
+        RuleMetricsCallback(use_wandb=wandb_active),
     ]
 
     model.learn(

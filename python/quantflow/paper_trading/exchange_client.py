@@ -191,6 +191,7 @@ class ExchangeClient:
         symbol: str,
         side: str,
         qty: float,
+        reduce_only: bool = False,
     ) -> dict[str, Any]:
         """Place a market order (used for shutdown flattening)."""
         params: dict[str, Any] = {
@@ -199,6 +200,8 @@ class ExchangeClient:
             "type":     "MARKET",
             "quantity": f"{qty:.3f}",
         }
+        if reduce_only:
+            params["reduceOnly"] = "true"
         return await self._request("POST", "/fapi/v1/order", params, signed=True)
 
     # ── User Data Stream (listen-key lifecycle) ───────────────────────────────

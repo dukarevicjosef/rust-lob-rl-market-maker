@@ -409,20 +409,24 @@ class PaperTradingRunner:
             return
 
         side = "SELL" if pos > 0 else "BUY"
-        qty  = round(abs(pos), 3)
+        step_size = 0.001
+        qty  = math.floor(abs(pos) / step_size) * step_size
+
+        mid = self._last_mid or 70000.0
+        min_notional = 105.0
+        min_qty = math.ceil(min_notional / mid / step_size) * step_size
+
+        if qty < min_qty:
+            log.warning(
+                "Emergency flatten: position %.4f BTC (~%.0f USDT) "
+                "below min notional — cannot flatten",
+                pos, abs(pos) * mid,
+            )
+            return
+
         try:
-            # Market order — bypass risk manager (kill switch override)
-            await asyncio.to_thread(
-                self._client._request_sync,
-                "POST", "/fapi/v1/order",
-                {
-                    "symbol":   self._cfg.symbol,
-                    "side":     side,
-                    "type":     "MARKET",
-                    "quantity": f"{qty:.3f}",
-                    "timestamp": int(time.time() * 1000),
-                },
-                True,
+            await self._client.place_market_order(
+                self._cfg.symbol, side, qty, reduce_only=True,
             )
             log.info("Emergency flatten: %s %.4f BTC", side, qty)
         except Exception as exc:
@@ -513,17 +517,36 @@ class PaperTradingRunner:
         # Always flatten remaining position on shutdown
         if abs(self._position_btc) > 1e-4:
             side = "SELL" if self._position_btc > 0 else "BUY"
-            qty  = round(abs(self._position_btc), 3)
-            log.info("Flattening position: %s %.4f BTC...", side, qty)
-            try:
-                await self._client.place_market_order(self._cfg.symbol, side, qty)
-                log.info("Position closed via market %s %.4f", side, qty)
-                self._position_btc = 0.0
-            except Exception as exc:
-                log.error(
-                    "FAILED to flatten: %s — MANUAL CLOSE REQUIRED: %.4f BTC",
-                    exc, self._position_btc,
+            step_size = 0.001
+            qty  = math.floor(abs(self._position_btc) / step_size) * step_size
+
+            mid = self._last_mid or 70000.0
+            min_notional = 105.0  # Binance futures minimum + buffer
+            min_qty = math.ceil(min_notional / mid / step_size) * step_size
+
+            if qty < min_qty:
+                log.warning(
+                    "Position %.4f BTC (~%.0f USDT) below min notional "
+                    "%.0f USDT — cannot flatten via market order. "
+                    "Residual risk: ~%.0f USDT",
+                    self._position_btc,
+                    abs(self._position_btc) * mid,
+                    min_notional,
+                    abs(self._position_btc) * mid,
                 )
+            else:
+                log.info("Flattening position: %s %.4f BTC...", side, qty)
+                try:
+                    await self._client.place_market_order(
+                        self._cfg.symbol, side, qty, reduce_only=True,
+                    )
+                    log.info("Position closed via market %s %.4f", side, qty)
+                    self._position_btc = 0.0
+                except Exception as exc:
+                    log.error(
+                        "FAILED to flatten: %s — MANUAL CLOSE REQUIRED: %.4f BTC",
+                        exc, self._position_btc,
+                    )
 
         try:
             await self._client.close_listen_key(listen_key)

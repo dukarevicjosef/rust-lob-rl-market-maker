@@ -64,8 +64,9 @@ class SACConfig:
     total_timesteps: int = 1_000_000
     # Callback / evaluation
     eval_freq:          int   = 10_000
-    n_eval_episodes:    int   = 5
+    n_eval_episodes:    int   = 20
     eval_seed_offset:   int   = 5_000   # fixed seeds 5000–5019
+    best_model_metric:  str   = "mean_reward"  # "mean_reward" or "median_reward"
     # AS baseline for delta logging
     as_baseline_gamma:        float = 0.1
     as_baseline_kappa_offset: float = 0.0
@@ -157,6 +158,7 @@ class QuantflowEvalCallback(BaseCallback):
         as_gamma:         float       = 0.1,
         as_kappa_offset:  float       = 0.0,
         use_wandb:        bool        = False,
+        best_model_metric: str        = "mean_reward",
         verbose:          int         = 1,
     ) -> None:
         super().__init__(verbose)
@@ -167,7 +169,8 @@ class QuantflowEvalCallback(BaseCallback):
         self._save_path     = Path(save_path) if save_path else None
         self._as_action     = np.array([as_gamma, as_kappa_offset], dtype=np.float32)
         self._use_wandb     = use_wandb and _WANDB_AVAILABLE
-        self._best_reward   = -np.inf
+        self._best_metric   = -np.inf
+        self._best_model_metric = best_model_metric
 
     # ── BaseCallback interface ─────────────────────────────────────────────────
 
@@ -183,8 +186,14 @@ class QuantflowEvalCallback(BaseCallback):
 
         metrics = {
             "eval/mean_reward":        sac_m["mean_reward"],
+            "eval/median_reward":      sac_m["median_reward"],
             "eval/mean_pnl":           sac_m["mean_pnl"],
+            "eval/pnl_std":            sac_m["pnl_std"],
+            "eval/pnl_median":         sac_m["pnl_median"],
+            "eval/pnl_min":            sac_m["pnl_min"],
+            "eval/pnl_max":            sac_m["pnl_max"],
             "eval/mean_sharpe":        sac_m["mean_sharpe"],
+            "eval/sharpe_std":         sac_m["sharpe_std"],
             "eval/mean_inventory_std": sac_m["mean_inv_std"],
             "baseline/mean_reward":    as_m["mean_reward"],
             "baseline/mean_pnl":       as_m["mean_pnl"],
@@ -212,11 +221,12 @@ class QuantflowEvalCallback(BaseCallback):
                 f"ΔSharpe={sac_m['mean_sharpe']-as_m['mean_sharpe']:+.3f}"
             )
 
-        if sac_m["mean_reward"] > self._best_reward and self._save_path:
-            self._best_reward = sac_m["mean_reward"]
+        current_metric = sac_m[self._best_model_metric]
+        if current_metric > self._best_metric and self._save_path:
+            self._best_metric = current_metric
             self.model.save(self._save_path / "best_model")
             if self.verbose >= 1:
-                print(f"  → new best ({self._best_reward:.3f}) — model saved")
+                print(f"  → new best {self._best_model_metric}={self._best_metric:.3f} — model saved")
 
         return True
 
@@ -247,11 +257,20 @@ class QuantflowEvalCallback(BaseCallback):
             sharpes.append(float(arr.mean() / (arr.std() + 1e-9) * np.sqrt(n)))
             inv_stds.append(float(np.std(inv_hist)))
 
+        pnl_arr    = np.array(pnls)
+        sharpe_arr = np.array(sharpes)
+        reward_arr = np.array(rewards)
         return {
-            "mean_reward": float(np.mean(rewards)),
-            "mean_pnl":    float(np.mean(pnls)),
-            "mean_sharpe": float(np.mean(sharpes)),
-            "mean_inv_std": float(np.mean(inv_stds)),
+            "mean_reward":    float(np.mean(reward_arr)),
+            "median_reward":  float(np.median(reward_arr)),
+            "mean_pnl":       float(np.mean(pnl_arr)),
+            "pnl_std":        float(np.std(pnl_arr)),
+            "pnl_median":     float(np.median(pnl_arr)),
+            "pnl_min":        float(np.min(pnl_arr)),
+            "pnl_max":        float(np.max(pnl_arr)),
+            "mean_sharpe":    float(np.mean(sharpe_arr)),
+            "sharpe_std":     float(np.std(sharpe_arr)),
+            "mean_inv_std":   float(np.mean(inv_stds)),
         }
 
 
@@ -356,6 +375,7 @@ def train(
             as_gamma         = sac_cfg.as_baseline_gamma,
             as_kappa_offset  = sac_cfg.as_baseline_kappa_offset,
             use_wandb        = wandb_active,
+            best_model_metric = sac_cfg.best_model_metric,
         ),
         RuleMetricsCallback(use_wandb=wandb_active),
     ]

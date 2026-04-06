@@ -310,6 +310,12 @@ class MarketMakingEnv(gym.Env):
         self._last_quote_mid: float | None = None
         self._vol_ema:        float        = 0.0
 
+        # Safety rule trigger counters (reset each episode)
+        self._rule_inventory_soft_count: int = 0
+        self._rule_inventory_hard_count: int = 0
+        self._rule_quote_pull_count:     int = 0
+        self._rule_vol_regime_count:     int = 0
+
         # Domain randomization
         self._pending_domain_params: dict | None = None
         self._sigma_scale: float = 1.0   # current lognormal σ multiplier
@@ -381,6 +387,10 @@ class MarketMakingEnv(gym.Env):
         self._spread_history.clear()
         self._last_quote_mid = None
         self._vol_ema        = 0.0
+        self._rule_inventory_soft_count = 0
+        self._rule_inventory_hard_count = 0
+        self._rule_quote_pull_count     = 0
+        self._rule_vol_regime_count     = 0
 
         mid = self._sim.mid_price()
         self._prev_mid = mid if mid is not None else self.initial_mid
@@ -438,6 +448,12 @@ class MarketMakingEnv(gym.Env):
             vol_spread_threshold  = self._vol_spread_threshold,
             vol_spread_multiplier = self._vol_spread_multiplier,
         )
+        # Accumulate rule trigger counts for episode-level metrics
+        self._rule_inventory_soft_count += int(_rules.inventory_soft)
+        self._rule_inventory_hard_count += int(_rules.inventory_hard)
+        self._rule_quote_pull_count     += int(_rules.quote_pull)
+        self._rule_vol_regime_count     += int(_rules.vol_regime)
+
         # Record mid at quote placement for the next step's quote-pull check.
         # Set to None when both sides were pulled so we re-check next step too.
         self._last_quote_mid = mid if (safe_bid is not None or safe_ask is not None) else None
@@ -503,6 +519,10 @@ class MarketMakingEnv(gym.Env):
                 "inventory_hard": _rules.inventory_hard,
                 "inventory_soft": _rules.inventory_soft,
             },
+            "rules/inventory_soft_pct": self._rule_inventory_soft_count / self._step_count,
+            "rules/inventory_hard_pct": self._rule_inventory_hard_count / self._step_count,
+            "rules/quote_pull_pct":     self._rule_quote_pull_count / self._step_count,
+            "rules/vol_regime_pct":     self._rule_vol_regime_count / self._step_count,
         }
         return obs, float(reward), terminated, False, info
 

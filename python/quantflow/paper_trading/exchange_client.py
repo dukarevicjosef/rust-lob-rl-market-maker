@@ -175,6 +175,32 @@ class ExchangeClient:
                 return float(pos.get("positionAmt", 0.0))
         return 0.0
 
+    async def get_position_detail(self, symbol: str) -> tuple[float, float]:
+        """Return (position_amt, entry_price) for a symbol."""
+        account = await self.get_account()
+        for pos in account.get("positions", []):
+            if pos.get("symbol") == symbol:
+                return (
+                    float(pos.get("positionAmt", 0.0)),
+                    float(pos.get("entryPrice", 0.0)),
+                )
+        return 0.0, 0.0
+
+    async def place_market_order(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+    ) -> dict[str, Any]:
+        """Place a market order (used for shutdown flattening)."""
+        params: dict[str, Any] = {
+            "symbol":   symbol,
+            "side":     side.upper(),
+            "type":     "MARKET",
+            "quantity": f"{qty:.3f}",
+        }
+        return await self._request("POST", "/fapi/v1/order", params, signed=True)
+
     # ── User Data Stream (listen-key lifecycle) ───────────────────────────────
 
     async def create_listen_key(self) -> str:

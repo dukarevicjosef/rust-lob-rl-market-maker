@@ -86,10 +86,31 @@ class PaperTradingRunner:
             self._cfg.symbol, self._cfg.testnet, self._cfg.model_path,
         )
 
-        # Warm up: fetch current position and mid from REST
+        # Reset daily risk counters so previous session violations don't carry over
+        self._risk.reset_daily()
+
+        # Warm up: fetch current position, entry price, and mid from REST
         try:
-            self._position_btc = await self._client.get_position(self._cfg.symbol)
+            pos_btc, entry_price = await self._client.get_position_detail(self._cfg.symbol)
+            self._position_btc = pos_btc
             self._last_mid = await self._client.get_ticker_price(self._cfg.symbol)
+
+            if abs(self._position_btc) > 1e-4 and entry_price > 0.0:
+                # Inherited position: set cash so that PnL relative to entry is correct.
+                # mtm = cash + pos * mid, and at entry the position's PnL was 0,
+                # so cash = -(pos * entry_price).
+                self._cash = -(self._position_btc * entry_price)
+                unrealized = self._position_btc * (self._last_mid - entry_price)
+                self._risk.update_pnl(0.0, unrealized)
+                log.info(
+                    "Inherited position: %.4f BTC @ entry %.2f "
+                    "(unrealized: %+.2f USDT)",
+                    self._position_btc, entry_price, unrealized,
+                )
+            else:
+                self._cash = 0.0
+                self._risk.update_pnl(0.0, 0.0)
+
             log.info("Initial position=%.4f BTC mid=%.2f", self._position_btc, self._last_mid)
         except Exception as exc:
             log.warning("Warm-up REST failed: %s — continuing with defaults", exc)
@@ -485,6 +506,25 @@ class PaperTradingRunner:
             await self._client.cancel_all_orders(self._cfg.symbol)
         except Exception as exc:
             log.error("Shutdown cancel_all failed: %s", exc)
+
+        self._bid_id = None
+        self._ask_id = None
+
+        # Always flatten remaining position on shutdown
+        if abs(self._position_btc) > 1e-4:
+            side = "SELL" if self._position_btc > 0 else "BUY"
+            qty  = round(abs(self._position_btc), 3)
+            log.info("Flattening position: %s %.4f BTC...", side, qty)
+            try:
+                await self._client.place_market_order(self._cfg.symbol, side, qty)
+                log.info("Position closed via market %s %.4f", side, qty)
+                self._position_btc = 0.0
+            except Exception as exc:
+                log.error(
+                    "FAILED to flatten: %s — MANUAL CLOSE REQUIRED: %.4f BTC",
+                    exc, self._position_btc,
+                )
+
         try:
             await self._client.close_listen_key(listen_key)
         except Exception as exc:

@@ -419,13 +419,24 @@ def main() -> None:
     p.add_argument("--wandb-name",     type=str,  default=None)
     p.add_argument("--hawkes-params",  type=str,  default=None,
                    help="Path to hawkes_params.json for calibrated BTC/USDT simulation")
+    p.add_argument("--maker-fee-bps",  type=float, default=0.0,
+                   help="Maker fee in basis points (default 0; Binance Futures = 2)")
+    p.add_argument("--taker-fee-bps",  type=float, default=0.0,
+                   help="Taker fee in basis points (default 0; Binance Futures = 5)")
     args = p.parse_args()
 
     cfg = SACConfig(
         total_timesteps = 2_000_000 if args.final else args.timesteps
     )
+
+    env_overrides: dict[str, Any] = {}
+    if args.maker_fee_bps > 0 or args.taker_fee_bps > 0:
+        env_overrides["maker_fee_bps"] = args.maker_fee_bps
+        env_overrides["taker_fee_bps"] = args.taker_fee_bps
+
     train(
         cfg,
+        env_config         = env_overrides or None,
         run_dir            = args.run_dir,
         use_wandb          = args.wandb,
         wandb_project      = args.wandb_project,

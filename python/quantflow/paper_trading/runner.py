@@ -72,6 +72,7 @@ class PaperTradingRunner:
         self._total_fills:   int   = 0
         self._total_pnl:     float = 0.0
         self._peak_pnl:      float = 0.0
+        self._total_fees:    float = 0.0
 
         # Shutdown flag
         self._stop = asyncio.Event()
@@ -354,18 +355,22 @@ class PaperTradingRunner:
         if qty <= 0.0:
             return
 
-        log.info("FILL | %s %.4f BTC @ %.2f", side, qty, price)
+        # Commission from Binance fill event ("n" = commission amount)
+        commission = float(order.get("n", 0.0))
+        self._total_fees += commission
+
+        log.info("FILL | %s %.4f BTC @ %.2f (fee=%.4f)", side, qty, price, commission)
 
         elapsed = time.monotonic() - self._session_start
 
         if side.upper() == "BUY":
             self._position_btc += qty
-            self._cash         -= price * qty
+            self._cash         -= price * qty + commission
             if order_id == self._bid_id:
                 self._bid_id = None
         else:
             self._position_btc -= qty
-            self._cash         += price * qty
+            self._cash         += price * qty - commission
             if order_id == self._ask_id:
                 self._ask_id = None
 
@@ -440,22 +445,26 @@ class PaperTradingRunner:
             status  = self._risk.status()
             elapsed = time.monotonic() - self._session_start
             mid     = self._last_mid
-            mtm     = self._cash + self._position_btc * mid
+            gross   = self._cash + self._position_btc * mid + self._total_fees
+            net     = self._cash + self._position_btc * mid
 
             log.info(
-                "t=%ds | mid=%.2f | pos=%.4f BTC | PnL=%.2f USDT | fills=%d | "
+                "t=%ds | mid=%.2f | pos=%.4f BTC | grossPnL=%.2f | "
+                "fees=%.2f | netPnL=%.2f | fills=%d | "
                 "open_orders=%d | kill=%s",
                 int(elapsed),
                 mid,
                 self._position_btc,
-                mtm,
+                gross,
+                self._total_fees,
+                net,
                 self._total_fills,
                 status["open_orders"],
                 status["is_killed"],
             )
 
             if self._cfg.use_wandb:
-                self._log_wandb(elapsed, mid, mtm, status)
+                self._log_wandb(elapsed, mid, net, status)
 
     def _log_wandb(
         self,
@@ -466,14 +475,18 @@ class PaperTradingRunner:
     ) -> None:
         try:
             import wandb
+            gross = mtm + self._total_fees
             wandb.log({
                 "time_s":         elapsed,
                 "mid_price":      mid,
                 "position_btc":   self._position_btc,
-                "pnl_usdt":       mtm,
+                "gross_pnl_usdt": gross,
+                "total_fees":     self._total_fees,
+                "net_pnl_usdt":   mtm,
                 "peak_pnl":       self._peak_pnl,
                 "drawdown_usdt":  self._peak_pnl - mtm,
                 "total_fills":    self._total_fills,
+                "avg_fee_per_fill": self._total_fees / max(1, self._total_fills),
                 "open_orders":    status["open_orders"],
                 "is_killed":      int(status["is_killed"]),
                 "vol_ema":        self._vol_ema,
@@ -553,12 +566,18 @@ class PaperTradingRunner:
         except Exception as exc:
             log.debug("Listen key close failed: %s", exc)
 
-        elapsed = time.monotonic() - self._session_start
-        mid     = self._last_mid
-        final   = self._cash + self._position_btc * mid
+        elapsed   = time.monotonic() - self._session_start
+        mid       = self._last_mid
+        net_pnl   = self._cash + self._position_btc * mid
+        gross_pnl = net_pnl + self._total_fees
+        avg_fee   = self._total_fees / max(1, self._total_fills)
         log.info(
-            "Session ended | duration=%.0fs | final_pos=%.4f BTC | final_PnL=%.2f USDT",
-            elapsed, self._position_btc, final,
+            "Session ended | duration=%.0fs | final_pos=%.4f BTC | "
+            "gross_PnL=%.2f USDT | total_fees=%.2f USDT | "
+            "net_PnL=%.2f USDT | total_fills=%d | avg_fee_per_fill=%.4f USDT",
+            elapsed, self._position_btc,
+            gross_pnl, self._total_fees, net_pnl,
+            self._total_fills, avg_fee,
         )
 
         if self._cfg.use_wandb:

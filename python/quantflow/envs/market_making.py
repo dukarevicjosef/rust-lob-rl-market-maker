@@ -100,6 +100,9 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "inventory_limit":    50,
     "inventory_soft_limit": 30,
     "inventory_hard_limit": 40,
+    # Transaction fees (bps; 0.0 = disabled for backward compat)
+    "maker_fee_bps":      0.0,
+    "taker_fee_bps":      0.0,
     # Safety rules
     "tick_size":           0.01,
     "vol_spread_threshold": 2.0,
@@ -215,6 +218,8 @@ class MarketMakingEnv(gym.Env):
         self._tick_size:           float = float(cfg["tick_size"])
         self._vol_spread_threshold: float = float(cfg["vol_spread_threshold"])
         self._vol_spread_multiplier: float = float(cfg["vol_spread_multiplier"])
+        self._maker_fee_rate: float = float(cfg["maker_fee_bps"]) / 10_000.0
+        self._taker_fee_rate: float = float(cfg["taker_fee_bps"]) / 10_000.0
 
         # v1 reward weights (top-level config, backward-compatible)
         self.phi         = float(cfg["phi"])
@@ -316,6 +321,12 @@ class MarketMakingEnv(gym.Env):
         self._rule_quote_pull_count:     int = 0
         self._rule_vol_regime_count:     int = 0
 
+        # Fee tracking (reset each episode)
+        self._total_fees:      float = 0.0
+        self._step_fees:       float = 0.0
+        self._total_fills_count: int = 0
+        self._is_hard_limit_step: bool = False
+
         # Domain randomization
         self._pending_domain_params: dict | None = None
         self._sigma_scale: float = 1.0   # current lognormal σ multiplier
@@ -391,6 +402,10 @@ class MarketMakingEnv(gym.Env):
         self._rule_inventory_hard_count = 0
         self._rule_quote_pull_count     = 0
         self._rule_vol_regime_count     = 0
+        self._total_fees         = 0.0
+        self._step_fees          = 0.0
+        self._total_fills_count  = 0
+        self._is_hard_limit_step = False
 
         mid = self._sim.mid_price()
         self._prev_mid = mid if mid is not None else self.initial_mid
@@ -457,9 +472,11 @@ class MarketMakingEnv(gym.Env):
         # Record mid at quote placement for the next step's quote-pull check.
         # Set to None when both sides were pulled so we re-check next step too.
         self._last_quote_mid = mid if (safe_bid is not None or safe_ask is not None) else None
+        self._is_hard_limit_step = _rules.inventory_hard
 
         self._place_quotes(safe_bid, safe_ask)
 
+        self._step_fees = 0.0
         fill_pnl = 0.0
         for _ in range(self.events_per_step):
             event = self._sim.step()
@@ -523,6 +540,9 @@ class MarketMakingEnv(gym.Env):
             "rules/inventory_hard_pct": self._rule_inventory_hard_count / self._step_count,
             "rules/quote_pull_pct":     self._rule_quote_pull_count / self._step_count,
             "rules/vol_regime_pct":     self._rule_vol_regime_count / self._step_count,
+            "fees_this_step":  self._step_fees,
+            "total_fees":      self._total_fees,
+            "fee_per_fill":    self._total_fees / max(1, self._total_fills_count),
         }
         return obs, float(reward), terminated, False, info
 
@@ -652,27 +672,39 @@ class MarketMakingEnv(gym.Env):
 
     def _process_fills(self, trades: list[dict]) -> float:
         pnl_delta = 0.0
+        fee_rate  = (self._taker_fee_rate if self._is_hard_limit_step
+                     else self._maker_fee_rate)
         for t in trades:
             maker_id = t["maker_id"]
             price    = t["price"]
             qty      = t["qty"]
             if self._bid_id is not None and maker_id == self._bid_id:
+                notional              = price * qty
+                fee                   = notional * fee_rate
                 self._inventory      += qty
-                self._cash           -= price * qty
+                self._cash           -= notional + fee
                 self._bid_id          = None
-                pnl_delta            += qty * price
+                pnl_delta            += notional
+                self._step_fees      += fee
+                self._total_fees     += fee
+                self._total_fills_count += 1
                 # reward v2 tracking
                 self._step_buys      += qty
-                self._step_buy_value += price * qty
+                self._step_buy_value += notional
                 # obs v2 tracking
                 self._agent_fill_history.append((self._sim_time, 1, price))
             elif self._ask_id is not None and maker_id == self._ask_id:
-                self._inventory       -= qty
-                self._cash            += price * qty
-                self._ask_id           = None
+                notional              = price * qty
+                fee                   = notional * fee_rate
+                self._inventory      -= qty
+                self._cash           += notional - fee
+                self._ask_id          = None
+                self._step_fees      += fee
+                self._total_fees     += fee
+                self._total_fills_count += 1
                 # reward v2 tracking
-                self._step_sells      += qty
-                self._step_sell_value += price * qty
+                self._step_sells     += qty
+                self._step_sell_value += notional
                 # obs v2 tracking
                 self._agent_fill_history.append((self._sim_time, -1, price))
         return pnl_delta

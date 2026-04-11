@@ -195,6 +195,8 @@ class QuantflowEvalCallback(BaseCallback):
             "eval/mean_sharpe":        sac_m["mean_sharpe"],
             "eval/sharpe_std":         sac_m["sharpe_std"],
             "eval/mean_inventory_std": sac_m["mean_inv_std"],
+            "eval/total_fees":         sac_m["total_fees"],
+            "eval/fee_pct_of_pnl":     sac_m["fee_pct_of_pnl"],
             "baseline/mean_reward":    as_m["mean_reward"],
             "baseline/mean_pnl":       as_m["mean_pnl"],
             "baseline/mean_sharpe":    as_m["mean_sharpe"],
@@ -233,7 +235,7 @@ class QuantflowEvalCallback(BaseCallback):
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _run_episodes(self, policy_fn) -> dict[str, float]:
-        rewards, pnls, sharpes, inv_stds = [], [], [], []
+        rewards, pnls, sharpes, inv_stds, total_fees = [], [], [], [], []
 
         for seed in range(self._n_eval):
             env = MarketMakingEnv(self._eval_env_cfg)
@@ -256,10 +258,14 @@ class QuantflowEvalCallback(BaseCallback):
             pnls.append(float(info["pnl"]))
             sharpes.append(float(arr.mean() / (arr.std() + 1e-9) * np.sqrt(n)))
             inv_stds.append(float(np.std(inv_hist)))
+            total_fees.append(float(info.get("total_fees", 0.0)))
 
         pnl_arr    = np.array(pnls)
         sharpe_arr = np.array(sharpes)
         reward_arr = np.array(rewards)
+        fee_arr    = np.array(total_fees)
+        mean_fees  = float(np.mean(fee_arr))
+        mean_gross = float(np.mean(np.abs(pnl_arr)))
         return {
             "mean_reward":    float(np.mean(reward_arr)),
             "median_reward":  float(np.median(reward_arr)),
@@ -271,6 +277,8 @@ class QuantflowEvalCallback(BaseCallback):
             "mean_sharpe":    float(np.mean(sharpe_arr)),
             "sharpe_std":     float(np.std(sharpe_arr)),
             "mean_inv_std":   float(np.mean(inv_stds)),
+            "total_fees":     mean_fees,
+            "fee_pct_of_pnl": (mean_fees / mean_gross * 100.0) if mean_gross > 1e-9 else 0.0,
         }
 
 

@@ -33,7 +33,7 @@ import websockets
 
 log = logging.getLogger(__name__)
 
-_WS_BASE = "wss://fapi.binance.com"
+_WS_BASE = "wss://fstream.binance.com"
 _FLUSH_THRESHOLD = 10_000  # events per buffer before flush
 
 
@@ -126,7 +126,7 @@ class SessionRecorder:
 
     async def _ws_loop(self) -> None:
         sym = self._symbol.lower()
-        streams = f"{sym}@depth@100ms/{sym}@aggTrade/{sym}@bookTicker"
+        streams = f"{sym}@depth20@100ms/{sym}@aggTrade/{sym}@bookTicker"
         url = f"{_WS_BASE}/stream?streams={streams}"
 
         attempts = 0

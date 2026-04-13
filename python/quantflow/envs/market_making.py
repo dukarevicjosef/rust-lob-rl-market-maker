@@ -136,6 +136,9 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "seed":               42,
     # Calibrated Hawkes parameters (Phase C)
     "hawkes_params_path": None,   # path to hawkes_params.json; None = default params
+    # Domain randomization: Hawkes params pool (Phase D)
+    "hawkes_params_pool": [],     # list of paths to hawkes_params.json files
+    "domain_randomization": False,  # if True, sample from pool at each reset()
 }
 
 
@@ -269,20 +272,35 @@ class MarketMakingEnv(gym.Env):
         )
 
         # Simulator — optionally loaded from calibrated Hawkes parameters.
-        sim_config: dict[str, Any] = {
+        self._base_sim_config: dict[str, Any] = {
             "t_max":             self.t_max,
             "snapshot_interval": int(cfg["snapshot_interval"]),
         }
         hawkes_path = cfg.get("hawkes_params_path")
         if hawkes_path:
-            import json
+            import json as _json
             with open(hawkes_path) as _f:
-                _cal = json.load(_f)
+                _cal = _json.load(_f)
             _mu, _alpha, _beta = _load_hawkes_params(_cal)
-            sim_config["hawkes_mu"]    = _mu
-            sim_config["hawkes_alpha"] = _alpha
-            sim_config["hawkes_beta"]  = _beta
-        self._sim: quantflow.HawkesSimulator = quantflow.HawkesSimulator.new(sim_config)
+            self._base_sim_config["hawkes_mu"]    = _mu
+            self._base_sim_config["hawkes_alpha"] = _alpha
+            self._base_sim_config["hawkes_beta"]  = _beta
+
+        # Domain randomization: pre-load Hawkes params pool
+        self._domain_randomization: bool = bool(cfg.get("domain_randomization", False))
+        self._hawkes_pool: list[dict[str, Any]] = []
+        for pool_path in cfg.get("hawkes_params_pool", []):
+            import json as _json
+            with open(pool_path) as _f:
+                _pool_cal = _json.load(_f)
+            _p_mu, _p_alpha, _p_beta = _load_hawkes_params(_pool_cal)
+            self._hawkes_pool.append({
+                "hawkes_mu": _p_mu, "hawkes_alpha": _p_alpha, "hawkes_beta": _p_beta,
+            })
+
+        self._sim: quantflow.HawkesSimulator = quantflow.HawkesSimulator.new(
+            self._base_sim_config
+        )
         self._strat: quantflow.AvellanedaStoikov | None = None
 
         # Episode state (initialised in reset)
@@ -356,6 +374,13 @@ class MarketMakingEnv(gym.Env):
     ) -> tuple[dict, dict]:
         super().reset(seed=seed)
         rng_seed = seed if seed is not None else int(self.cfg["seed"])
+
+        # Domain randomization: sample Hawkes params from pool
+        if self._domain_randomization and self._hawkes_pool:
+            idx = self.np_random.integers(len(self._hawkes_pool))
+            pool_params = self._hawkes_pool[idx]
+            sim_cfg = {**self._base_sim_config, **pool_params}
+            self._sim = quantflow.HawkesSimulator.new(sim_cfg)
 
         # Apply domain randomization params before re-seeding the simulator.
         if self._pending_domain_params:

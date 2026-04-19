@@ -98,7 +98,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "quote_qty":          10,
     # Inventory
     "inventory_limit":    50,
-    "inventory_soft_limit": 30,
+    "inventory_soft_limit": 20,
     "inventory_hard_limit": 40,
     # Transaction fees (bps; 0.0 = disabled for backward compat)
     "maker_fee_bps":      0.0,
@@ -117,6 +117,9 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "psi":                0.0001,   # quadratic inventory penalty
     "lambda_hard":        0.1,      # hard breach penalty (alias: lambda_breach)
     "initial_mid":        100.0,
+    # Drawdown penalty (0.0 coef = disabled for backward compat)
+    "dd_penalty_threshold": 200.0,
+    "dd_penalty_coef":      0.0,
     # Reward v2 extensions
     "reward_config": {
         "phi":                  0.01,
@@ -229,6 +232,10 @@ class MarketMakingEnv(gym.Env):
         self.psi         = float(cfg["psi"])
         self.lambda_hard = float(cfg["lambda_hard"])
 
+        # Drawdown penalty
+        self._dd_threshold: float = float(cfg["dd_penalty_threshold"])
+        self._dd_coef:      float = float(cfg["dd_penalty_coef"])
+
         # Observation version
         self.obs_version: str = str(cfg.get("obs_version", "v1"))
 
@@ -314,6 +321,9 @@ class MarketMakingEnv(gym.Env):
         self._ask_id:     int | None = None
         self._mid_returns: collections.deque = collections.deque(maxlen=self.vol_window)
         self._exhausted:  bool = False
+
+        # Drawdown tracking (reset each episode)
+        self._peak_pnl:   float = 0.0
 
         # v2 per-step fill tracking (reset each step)
         self._step_buys:      int   = 0
@@ -406,6 +416,7 @@ class MarketMakingEnv(gym.Env):
         self._step_count = 0
         self._sim_time   = 0.0
         self._prev_pnl   = 0.0
+        self._peak_pnl   = 0.0
         self._bid_id     = None
         self._ask_id     = None
         self._mid_returns.clear()
@@ -538,6 +549,17 @@ class MarketMakingEnv(gym.Env):
         else:
             raw_reward, components = self._compute_reward_v1(pnl)
 
+        # Drawdown penalty: quadratic above threshold
+        self._peak_pnl = max(self._peak_pnl, pnl)
+        current_drawdown = self._peak_pnl - pnl
+        if self._dd_coef > 0.0 and current_drawdown > self._dd_threshold:
+            dd_excess = current_drawdown - self._dd_threshold
+            dd_penalty = self._dd_coef * dd_excess ** 2
+        else:
+            dd_penalty = 0.0
+        raw_reward -= dd_penalty
+        components["dd_penalty"] = dd_penalty
+
         if self._normalize_reward:
             reward = self._reward_normalizer.normalize(raw_reward)
         else:
@@ -555,6 +577,9 @@ class MarketMakingEnv(gym.Env):
             "mid":        current_mid,
             "raw_reward": raw_reward,
             "reward_components": components,
+            "current_drawdown": current_drawdown,
+            "dd_penalty":       dd_penalty,
+            "peak_pnl":         self._peak_pnl,
             "rules_triggered": {
                 "vol_regime":     _rules.vol_regime,
                 "quote_pull":     _rules.quote_pull,

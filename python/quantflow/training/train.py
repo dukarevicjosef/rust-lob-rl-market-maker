@@ -74,7 +74,8 @@ class SACConfig:
 
 # Default environment config — reward v2 tuned parameters
 _DEFAULT_ENV_CFG: dict[str, Any] = {
-    "t_max":           100.0,   # sim-seconds; 500steps×20ev÷217ev/s≈46s, 2× buffer
+    "t_max":           600.0,   # sim-seconds; calibrated Hawkes ~120ev/s effective,
+                                # 500steps×20ev÷120≈83s; 600s gives ample headroom
     "episode_length":  500,
     "warm_up_events":  200,
     "events_per_step": 20,
@@ -93,7 +94,7 @@ _DEFAULT_ENV_CFG: dict[str, Any] = {
 # normalize_reward=False so eval metrics reflect true economic values,
 # not the normalized signal seen by the agent during training.
 _EVAL_ENV_CFG: dict[str, Any] = {
-    "t_max":            100.0,  # 500steps×20ev÷217ev/s≈46s, 2× buffer
+    "t_max":            600.0,  # match training t_max
     "episode_length":   500,
     "events_per_step":  20,
     "warm_up_events":   200,
@@ -105,22 +106,34 @@ _EVAL_ENV_CFG: dict[str, Any] = {
 
 class RuleMetricsCallback(BaseCallback):
     """
-    Log safety-rule trigger percentages to W&B at the end of each training
-    episode.  SB3 exposes ``self.locals["infos"]`` which contains the last
-    ``info`` dict returned by the env.  At episode boundaries (``dones[i]``),
-    the rule-pct keys reflect the full episode.
+    Log safety-rule trigger percentages and drawdown metrics to W&B at the
+    end of each training episode.  SB3 exposes ``self.locals["infos"]`` which
+    contains the last ``info`` dict returned by the env.  At episode boundaries
+    (``dones[i]``), the rule-pct keys reflect the full episode.
     """
 
     def __init__(self, use_wandb: bool = False, verbose: int = 0) -> None:
         super().__init__(verbose)
         self._use_wandb = use_wandb and _WANDB_AVAILABLE
+        # Per-episode accumulators for drawdown stats
+        self._ep_max_drawdown: float = 0.0
+        self._ep_dd_penalty_sum: float = 0.0
+        self._ep_steps: int = 0
 
     def _on_step(self) -> bool:
         infos = self.locals.get("infos", [])
         dones = self.locals.get("dones", [])
+
         for info, done in zip(infos, dones):
+            # Accumulate drawdown stats every step
+            dd = info.get("current_drawdown", 0.0)
+            self._ep_max_drawdown = max(self._ep_max_drawdown, dd)
+            self._ep_dd_penalty_sum += info.get("dd_penalty", 0.0)
+            self._ep_steps += 1
+
             if not done:
                 continue
+
             metrics = {}
             for key in (
                 "rules/inventory_soft_pct",
@@ -130,9 +143,24 @@ class RuleMetricsCallback(BaseCallback):
             ):
                 if key in info:
                     metrics[key] = info[key]
-                    self.logger.record(key, info[key])
-            if metrics and self._use_wandb:
+
+            # Drawdown episode metrics
+            metrics["rollout/max_drawdown"] = self._ep_max_drawdown
+            metrics["rollout/dd_penalty_mean"] = (
+                self._ep_dd_penalty_sum / max(1, self._ep_steps)
+            )
+            metrics["rollout/peak_pnl"] = info.get("peak_pnl", 0.0)
+
+            for k, v in metrics.items():
+                self.logger.record(k, v)
+            if self._use_wandb:
                 _wandb.log(metrics, step=self.num_timesteps)
+
+            # Reset accumulators for next episode
+            self._ep_max_drawdown = 0.0
+            self._ep_dd_penalty_sum = 0.0
+            self._ep_steps = 0
+
         return True
 
 

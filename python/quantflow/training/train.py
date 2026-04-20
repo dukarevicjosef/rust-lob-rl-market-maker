@@ -423,6 +423,12 @@ def main() -> None:
                    help="Maker fee in basis points (default 0; Binance Futures = 2)")
     p.add_argument("--taker-fee-bps",  type=float, default=0.0,
                    help="Taker fee in basis points (default 0; Binance Futures = 5)")
+    p.add_argument("--dd-penalty-coef", type=float, default=0.0,
+                   help="Drawdown penalty coefficient (default 0 = disabled)")
+    p.add_argument("--dd-penalty-threshold", type=float, default=200.0,
+                   help="Drawdown threshold before penalty applies (default 200)")
+    p.add_argument("--inventory-soft-limit", type=int, default=None,
+                   help="Inventory soft limit for one-sided quoting (default from env config)")
     args = p.parse_args()
 
     cfg = SACConfig(
@@ -433,6 +439,11 @@ def main() -> None:
     if args.maker_fee_bps > 0 or args.taker_fee_bps > 0:
         env_overrides["maker_fee_bps"] = args.maker_fee_bps
         env_overrides["taker_fee_bps"] = args.taker_fee_bps
+    if args.dd_penalty_coef > 0:
+        env_overrides["dd_penalty_coef"] = args.dd_penalty_coef
+        env_overrides["dd_penalty_threshold"] = args.dd_penalty_threshold
+    if args.inventory_soft_limit is not None:
+        env_overrides["inventory_soft_limit"] = args.inventory_soft_limit
 
     train(
         cfg,

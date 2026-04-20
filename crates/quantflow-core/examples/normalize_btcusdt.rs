@@ -9,7 +9,7 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use arrow::array::{Array, BooleanArray, Float64Array, ListArray, UInt64Array};
+use arrow::array::{Array, BooleanArray, Float64Array, Int64Array, ListArray, StringArray, LargeStringArray, UInt64Array};
 use clap::Parser;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -31,6 +31,9 @@ struct Args {
     /// Date string matching the filename prefix (YYYY-MM-DD)
     #[arg(long, default_value_t = chrono::Utc::now().format("%Y-%m-%d").to_string())]
     date: String,
+    /// Session prefix (e.g. BTCUSDT_20260413_2201) — overrides --date for input lookup
+    #[arg(long)]
+    session: Option<String>,
     /// LOB snapshot interval in events
     #[arg(long, default_value_t = 1000usize)]
     snapshot_interval: usize,
@@ -64,6 +67,17 @@ impl RawEvent {
 
 // ── Parquet readers ───────────────────────────────────────────────────────────
 
+/// Read event_time column as u64 regardless of whether parquet stores it as Int64 or UInt64.
+fn read_event_time(col: &dyn Array, row: usize) -> Option<u64> {
+    if let Some(a) = col.as_any().downcast_ref::<Int64Array>() {
+        Some(a.value(row) as u64)
+    } else if let Some(a) = col.as_any().downcast_ref::<UInt64Array>() {
+        Some(a.value(row))
+    } else {
+        None
+    }
+}
+
 fn read_trades(path: &Path) -> anyhow::Result<Vec<RawTrade>> {
     let file = File::open(path)?;
     let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
@@ -71,8 +85,7 @@ fn read_trades(path: &Path) -> anyhow::Result<Vec<RawTrade>> {
 
     for batch in reader {
         let batch = batch?;
-        let event_times = batch.column(0).as_any().downcast_ref::<UInt64Array>()
-            .ok_or_else(|| anyhow::anyhow!("expected UInt64 for event_time"))?;
+        let event_times = batch.column(0);
         let prices      = batch.column(3).as_any().downcast_ref::<Float64Array>()
             .ok_or_else(|| anyhow::anyhow!("expected Float64 for price"))?;
         let quantities  = batch.column(4).as_any().downcast_ref::<Float64Array>()
@@ -81,8 +94,10 @@ fn read_trades(path: &Path) -> anyhow::Result<Vec<RawTrade>> {
             .ok_or_else(|| anyhow::anyhow!("expected Boolean for is_buy"))?;
 
         for i in 0..batch.num_rows() {
+            let event_time = read_event_time(event_times.as_ref(), i)
+                .ok_or_else(|| anyhow::anyhow!("event_time: expected Int64 or UInt64"))?;
             trades.push(RawTrade {
-                event_time: event_times.value(i),
+                event_time,
                 price:      prices.value(i),
                 quantity:   quantities.value(i),
                 is_buy:     is_buys.value(i),
@@ -92,6 +107,27 @@ fn read_trades(path: &Path) -> anyhow::Result<Vec<RawTrade>> {
     Ok(trades)
 }
 
+/// Parse JSON array of [price_str, qty_str] pairs into PriceLevels.
+fn parse_levels_json(json: &str) -> Vec<PriceLevel> {
+    let parsed: Vec<[String; 2]> = serde_json::from_str(json).unwrap_or_default();
+    parsed.iter().filter_map(|pair| {
+        let price = pair[0].parse::<f64>().ok()?;
+        let quantity = pair[1].parse::<f64>().ok()?;
+        Some(PriceLevel { price, quantity })
+    }).collect()
+}
+
+/// Read a string column that may be String or LargeString.
+fn read_string_col<'a>(col: &'a dyn Array, row: usize) -> Option<&'a str> {
+    if let Some(a) = col.as_any().downcast_ref::<StringArray>() {
+        Some(a.value(row))
+    } else if let Some(a) = col.as_any().downcast_ref::<LargeStringArray>() {
+        Some(a.value(row))
+    } else {
+        None
+    }
+}
+
 fn read_depth(path: &Path) -> anyhow::Result<Vec<RawDepth>> {
     let file = File::open(path)?;
     let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
@@ -99,31 +135,47 @@ fn read_depth(path: &Path) -> anyhow::Result<Vec<RawDepth>> {
 
     for batch in reader {
         let batch = batch?;
-        let event_times   = batch.column(0).as_any().downcast_ref::<UInt64Array>()
-            .ok_or_else(|| anyhow::anyhow!("expected UInt64 for event_time"))?;
-        let bid_prices    = batch.column(4).as_any().downcast_ref::<ListArray>()
-            .ok_or_else(|| anyhow::anyhow!("expected ListArray for bid_prices"))?;
-        let bid_quantities = batch.column(5).as_any().downcast_ref::<ListArray>()
-            .ok_or_else(|| anyhow::anyhow!("expected ListArray for bid_quantities"))?;
-        let ask_prices    = batch.column(6).as_any().downcast_ref::<ListArray>()
-            .ok_or_else(|| anyhow::anyhow!("expected ListArray for ask_prices"))?;
-        let ask_quantities = batch.column(7).as_any().downcast_ref::<ListArray>()
-            .ok_or_else(|| anyhow::anyhow!("expected ListArray for ask_quantities"))?;
+        let n_cols = batch.num_columns();
+        let event_times = batch.column(0);
+
+        // Two formats: JSON strings (4 cols) or ListArrays (8 cols)
+        let use_json = n_cols <= 5;
 
         for i in 0..batch.num_rows() {
-            let bp = read_f64_list(bid_prices, i);
-            let bq = read_f64_list(bid_quantities, i);
-            let ap = read_f64_list(ask_prices, i);
-            let aq = read_f64_list(ask_quantities, i);
+            let event_time = read_event_time(event_times.as_ref(), i)
+                .ok_or_else(|| anyhow::anyhow!("event_time: expected Int64 or UInt64"))?;
 
-            let bids: Vec<PriceLevel> = bp.iter().zip(bq.iter())
-                .map(|(&p, &q)| PriceLevel { price: p, quantity: q })
-                .collect();
-            let asks: Vec<PriceLevel> = ap.iter().zip(aq.iter())
-                .map(|(&p, &q)| PriceLevel { price: p, quantity: q })
-                .collect();
+            let (bids, asks) = if use_json {
+                // Schema: event_time, receive_time, bids_json, asks_json
+                let bids_json = read_string_col(batch.column(2).as_ref(), i)
+                    .ok_or_else(|| anyhow::anyhow!("expected String for bids_json"))?;
+                let asks_json = read_string_col(batch.column(3).as_ref(), i)
+                    .ok_or_else(|| anyhow::anyhow!("expected String for asks_json"))?;
+                (parse_levels_json(bids_json), parse_levels_json(asks_json))
+            } else {
+                // Schema: event_time, ..., bid_prices, bid_qtys, ask_prices, ask_qtys
+                let bid_prices = batch.column(4).as_any().downcast_ref::<ListArray>()
+                    .ok_or_else(|| anyhow::anyhow!("expected ListArray for bid_prices"))?;
+                let bid_quantities = batch.column(5).as_any().downcast_ref::<ListArray>()
+                    .ok_or_else(|| anyhow::anyhow!("expected ListArray for bid_quantities"))?;
+                let ask_prices = batch.column(6).as_any().downcast_ref::<ListArray>()
+                    .ok_or_else(|| anyhow::anyhow!("expected ListArray for ask_prices"))?;
+                let ask_quantities = batch.column(7).as_any().downcast_ref::<ListArray>()
+                    .ok_or_else(|| anyhow::anyhow!("expected ListArray for ask_quantities"))?;
 
-            depths.push(RawDepth { event_time: event_times.value(i), bids, asks });
+                let bp = read_f64_list(bid_prices, i);
+                let bq = read_f64_list(bid_quantities, i);
+                let ap = read_f64_list(ask_prices, i);
+                let aq = read_f64_list(ask_quantities, i);
+
+                let bids: Vec<PriceLevel> = bp.iter().zip(bq.iter())
+                    .map(|(&p, &q)| PriceLevel { price: p, quantity: q }).collect();
+                let asks: Vec<PriceLevel> = ap.iter().zip(aq.iter())
+                    .map(|(&p, &q)| PriceLevel { price: p, quantity: q }).collect();
+                (bids, asks)
+            };
+
+            depths.push(RawDepth { event_time, bids, asks });
         }
     }
     Ok(depths)
@@ -169,18 +221,58 @@ fn raw_depth_to_events(d: &RawDepth, norm: &mut BinanceNormalizer) -> Vec<Market
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
+/// Find a session file by prefix, falling back to glob search.
+/// Tries: 1) exact `{prefix}_trades.parquet`, 2) glob `*_{date-compact}_*_trades.parquet`
+fn find_session_files(dir: &Path, date: &str, session: Option<&str>) -> (PathBuf, PathBuf) {
+    if let Some(sess) = session {
+        return (
+            dir.join(format!("{}_trades.parquet", sess)),
+            dir.join(format!("{}_depth.parquet", sess)),
+        );
+    }
+
+    // Try {date}_trades.parquet first (legacy naming)
+    let trades = dir.join(format!("{}_trades.parquet", date));
+    let depth  = dir.join(format!("{}_depth.parquet", date));
+    if trades.exists() || depth.exists() {
+        return (trades, depth);
+    }
+
+    // Auto-discover session files: SYMBOL_YYYYMMDD_HHMM_{trades,depth}.parquet
+    // Convert YYYY-MM-DD → YYYYMMDD for matching
+    let date_compact = date.replace('-', "");
+    let suffix = "_trades.parquet";
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.ends_with(suffix) && name.contains(&date_compact) {
+                let prefix = name.strip_suffix(suffix).unwrap();
+                return (
+                    dir.join(format!("{}_trades.parquet", prefix)),
+                    dir.join(format!("{}_depth.parquet", prefix)),
+                );
+            }
+        }
+    }
+
+    // Nothing found — return the legacy paths so the error message is useful
+    (trades, depth)
+}
+
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let input = Path::new(&args.input);
     let output = Path::new(&args.output);
     std::fs::create_dir_all(output)?;
 
-    let trades_path: PathBuf = input.join(format!("{}_trades.parquet",  args.date));
-    let depth_path:  PathBuf = input.join(format!("{}_depth.parquet",   args.date));
+    let (trades_path, depth_path) = find_session_files(input, &args.date, args.session.as_deref());
 
     if !trades_path.exists() && !depth_path.exists() {
         eprintln!("No input files found. Run record_btcusdt first.");
         eprintln!("  Expected: {}", trades_path.display());
+        eprintln!("  Hint: use --session BTCUSDT_20260413_2201 for session files,");
+        eprintln!("        or --date 2026-04-13 (auto-discovers session naming).");
         return Ok(());
     }
 

@@ -1,0 +1,18 @@
+{
+  "symbol": "BTCUSDT",
+  "session_id": "BTCUSDT_20260417_1426",
+  "start_time": "2026-04-17T14:26:19.364786+00:00",
+  "end_time": "2026-04-17T18:26:30.100399+00:00",
+  "duration_hours": 4.0,
+  "total_trades": 552720,
+  "total_depth_updates": 132023,
+  "total_bookticker": 10816953,
+  "avg_spread_usd": 0.1609,
+  "avg_mid_price": 77640.17,
+  "price_range": [
+    77028.65,
+    78299.55
+  ],
+  "volatility_estimate": 9.1e-05,
+  "session_label": "eu_afternoon"
+}

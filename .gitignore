@@ -12,11 +12,13 @@ dist/
 *.so
 *.pyd
 
-# Data
+# Data — raw/processed parquets are large, keep only calibration JSONs
 data/*.parquet
 data/*.csv
 data/*/raw/
 data/*/processed/
+data/*/sessions/*.parquet
+data/*/sessions/*.dSYM/
 
 # Training outputs
 runs/

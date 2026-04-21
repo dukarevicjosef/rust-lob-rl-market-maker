@@ -95,6 +95,10 @@ class PaperTradingConfig:
     vol_spread_threshold:      float = 2.0
     vol_spread_multiplier:     float = 2.0
 
+    # ── Minimum spread floor ─────────────────────────────────────────────────
+    maker_fee_bps:             float = 2.0    # Binance Futures maker fee
+    min_spread_multiplier:     float = 1.5    # safety margin over RT fees
+
     # ── Internal convenience ──────────────────────────────────────────────────
     @property
     def max_position_btc(self) -> float:

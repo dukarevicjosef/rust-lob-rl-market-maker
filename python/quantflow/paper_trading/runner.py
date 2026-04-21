@@ -74,6 +74,10 @@ class PaperTradingRunner:
         self._peak_pnl:      float = 0.0
         self._total_fees:    float = 0.0
 
+        # Spread floor tracking
+        self._quote_cycles:       int = 0
+        self._spread_floor_hits:  int = 0
+
         # Shutdown flag
         self._stop = asyncio.Event()
 
@@ -251,6 +255,23 @@ class PaperTradingRunner:
             log.debug("Hard inventory limit hit — one-sided quoting")
         if rules.inventory_soft:
             log.debug("Soft inventory limit hit — one-sided quoting")
+
+        # Minimum spread floor: ensure round-trip is profitable after fees
+        self._quote_cycles += 1
+        if safe_bid is not None and safe_ask is not None:
+            rt_fee_rate = 2.0 * cfg.maker_fee_bps / 10_000.0
+            min_spread  = mid * rt_fee_rate * cfg.min_spread_multiplier
+            agent_spread = safe_ask - safe_bid
+
+            if agent_spread < min_spread:
+                half_min  = min_spread / 2.0
+                safe_bid  = mid - half_min
+                safe_ask  = mid + half_min
+                self._spread_floor_hits += 1
+                log.debug(
+                    "SPREAD FLOOR: widened %.2f → %.2f (min=%.2f)",
+                    agent_spread, min_spread, min_spread,
+                )
 
         # Cancel existing resting quotes
         await self._cancel_live_quotes()
@@ -448,10 +469,13 @@ class PaperTradingRunner:
             gross   = self._cash + self._position_btc * mid + self._total_fees
             net     = self._cash + self._position_btc * mid
 
+            floor_pct = (
+                self._spread_floor_hits / max(1, self._quote_cycles) * 100.0
+            )
             log.info(
                 "t=%ds | mid=%.2f | pos=%.4f BTC | grossPnL=%.2f | "
                 "fees=%.2f | netPnL=%.2f | fills=%d | "
-                "open_orders=%d | kill=%s",
+                "open_orders=%d | spread_floor=%.0f%% | kill=%s",
                 int(elapsed),
                 mid,
                 self._position_btc,
@@ -460,6 +484,7 @@ class PaperTradingRunner:
                 net,
                 self._total_fills,
                 status["open_orders"],
+                floor_pct,
                 status["is_killed"],
             )
 
@@ -476,6 +501,9 @@ class PaperTradingRunner:
         try:
             import wandb
             gross = mtm + self._total_fees
+            floor_pct = (
+                self._spread_floor_hits / max(1, self._quote_cycles) * 100.0
+            )
             wandb.log({
                 "time_s":         elapsed,
                 "mid_price":      mid,
@@ -490,6 +518,7 @@ class PaperTradingRunner:
                 "open_orders":    status["open_orders"],
                 "is_killed":      int(status["is_killed"]),
                 "vol_ema":        self._vol_ema,
+                "spread_floor_pct": floor_pct,
             })
         except Exception as exc:
             log.debug("W&B log failed: %s", exc)
@@ -571,13 +600,18 @@ class PaperTradingRunner:
         net_pnl   = self._cash + self._position_btc * mid
         gross_pnl = net_pnl + self._total_fees
         avg_fee   = self._total_fees / max(1, self._total_fills)
+        floor_pct = (
+            self._spread_floor_hits / max(1, self._quote_cycles) * 100.0
+        )
         log.info(
             "Session ended | duration=%.0fs | final_pos=%.4f BTC | "
             "gross_PnL=%.2f USDT | total_fees=%.2f USDT | "
-            "net_PnL=%.2f USDT | total_fills=%d | avg_fee_per_fill=%.4f USDT",
+            "net_PnL=%.2f USDT | total_fills=%d | avg_fee_per_fill=%.4f USDT | "
+            "spread_floor_triggered=%d/%d (%.0f%%)",
             elapsed, self._position_btc,
             gross_pnl, self._total_fees, net_pnl,
             self._total_fills, avg_fee,
+            self._spread_floor_hits, self._quote_cycles, floor_pct,
         )
 
         if self._cfg.use_wandb:
